@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // Colors
@@ -67,8 +68,8 @@ var (
 	statusConnectedStyle = lipgloss.NewStyle().
 				Foreground(colorGreen)
 
-	statusErrorStyle = lipgloss.NewStyle().
-				Foreground(colorRed)
+	chatSystemStyle = lipgloss.NewStyle().
+			Foreground(colorMuted)
 
 	tabActiveStyle = lipgloss.NewStyle().
 			Foreground(colorHighlight).
@@ -78,17 +79,22 @@ var (
 	tabInactiveStyle = lipgloss.NewStyle().
 				Foreground(colorMuted).
 				Padding(0, 1)
-
-	modalStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorPrimary).
-			Padding(1, 2)
 )
 
+// detectGlamourStyle queries the terminal background and returns "dark" or "light".
+// Must be called before the TUI starts.
+func detectGlamourStyle() string {
+	if termenv.HasDarkBackground() {
+		return "dark"
+	}
+	return "light"
+}
+
 // newMarkdownRenderer creates a glamour terminal renderer at the given width.
-func newMarkdownRenderer(width int) *glamour.TermRenderer {
+// style should be "dark" or "light" (detected once at startup via detectGlamourStyle).
+func newMarkdownRenderer(width int, style string) *glamour.TermRenderer {
 	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStylePath(style),
 		glamour.WithWordWrap(width),
 	)
 	if err != nil {

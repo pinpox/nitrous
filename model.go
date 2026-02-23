@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -14,13 +15,6 @@ import (
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
-type focus int
-
-const (
-	focusSidebar focus = iota
-	focusInput
-)
-
 type sidebarTab int
 
 const (
@@ -28,206 +22,235 @@ const (
 	tabDMs
 )
 
-type modalMode int
-
-const (
-	modalNone modalMode = iota
-	modalCreateChannel
-	modalNewDM
-)
-
 type model struct {
 	// Config and keys
-	cfg    Config
-	keys   Keys
-	pool   *nostr.SimplePool
-	relays []string
+	cfg         Config
+	cfgFlagPath string
+	keys        Keys
+	pool        *nostr.SimplePool
+	relays      []string
+	rooms       []Room // from rooms file
 
 	// TUI dimensions
 	width  int
 	height int
 
-	// Focus and navigation
-	focus       focus
-	tab         sidebarTab
-	sidebarIdx  int
-	modal       modalMode
-	modalInput  textarea.Model
+	// Navigation
+	tab sidebarTab
 
 	// Channels
-	channels       []Channel
-	activeChannel  int
-	channelMsgs    map[string][]ChatMessage
-	channelEvents  <-chan nostr.RelayEvent
-	channelCancel  context.CancelFunc
+	channels      []Channel
+	activeChannel int
+	channelMsgs   map[string][]ChatMessage
+	channelSubID  string // ID of the channel we're subscribed to
+	channelEvents <-chan nostr.RelayEvent
+	channelCancel context.CancelFunc
 
 	// DMs
-	dmPeers       []string // pubkeys of DM peers
-	activeDMPeer  int
-	dmMsgs        map[string][]ChatMessage
-	dmEvents      <-chan nostr.RelayEvent
-	dmCancel      context.CancelFunc
+	dmPeers      []string // pubkeys of DM peers
+	activeDMPeer int
+	dmMsgs       map[string][]ChatMessage
+	dmEvents     <-chan nostr.RelayEvent
+	dmCancel     context.CancelFunc
 
 	// Components
 	viewport viewport.Model
 	input    textarea.Model
 	mdRender *glamour.TermRenderer
+	mdStyle  string
+
+	// Global messages (shown when no channel/DM is active)
+	globalMsgs []ChatMessage
+
+	// Dedup
+	seenEvents map[string]bool
 
 	// Status
 	statusMsg string
-	errMsg    string
 }
 
-func newModel(cfg Config, keys Keys, pool *nostr.SimplePool) model {
+func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool, rooms []Room, mdRender *glamour.TermRenderer, mdStyle string) model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message..."
+	ta.Placeholder = "Type a message... (/help for commands)"
 	ta.Prompt = "> "
 	ta.CharLimit = 2000
 	ta.MaxHeight = inputHeight
 	ta.ShowLineNumbers = false
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
-	ta.Blur()
+	ta.Focus()
 
 	vp := viewport.New(80, 20)
 
-	modalTA := textarea.New()
-	modalTA.Placeholder = "Enter name..."
-	modalTA.CharLimit = 200
-	modalTA.MaxHeight = 1
-	modalTA.ShowLineNumbers = false
+	// Populate channels from rooms file
+	var channels []Channel
+	for _, r := range rooms {
+		channels = append(channels, Channel{ID: r.ID, Name: r.Name})
+	}
 
 	return model{
 		cfg:         cfg,
+		cfgFlagPath: cfgFlagPath,
 		keys:        keys,
 		pool:        pool,
 		relays:      cfg.Relays,
-		focus:       focusSidebar,
-		tab:         tabChannels,
+		rooms:       rooms,
+		width:  80,
+		height: 24,
+		tab:    tabChannels,
+		channels:    channels,
 		channelMsgs: make(map[string][]ChatMessage),
 		dmMsgs:      make(map[string][]ChatMessage),
 		dmPeers:     []string{},
+		seenEvents:  make(map[string]bool),
 		viewport:    vp,
 		input:       ta,
-		modalInput:  modalTA,
-		mdRender:    newMarkdownRenderer(60),
+		mdRender:    mdRender,
+		mdStyle:     mdStyle,
 		statusMsg:   fmt.Sprintf("connected to %d relays", len(cfg.Relays)),
 	}
 }
 
-func (m model) Init() tea.Cmd {
-	return tea.Batch(
-		fetchChannels(m.pool, m.relays),
-		m.startDMSubscription(),
-	)
-}
-
-func (m *model) startDMSubscription() tea.Cmd {
-	if m.dmCancel != nil {
-		m.dmCancel()
+func (m *model) Init() tea.Cmd {
+	log.Println("Init() called")
+	m.addSystemMsg("nitrous — nostr chat")
+	m.addSystemMsg(fmt.Sprintf("npub: %s", m.keys.NPub))
+	for _, r := range m.relays {
+		m.addSystemMsg(fmt.Sprintf("connecting to %s ...", r))
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	m.dmCancel = cancel
-
-	ch := m.pool.SubscribeMany(ctx, m.relays, nostr.Filter{
-		Kinds: []int{4},
-		Tags:  nostr.TagMap{"p": {m.keys.PK}},
-		Limit: 50,
-	})
-	m.dmEvents = ch
-
-	return waitForDMEvent(ch, m.keys)
-}
-
-func (m *model) startChannelSubscription(channelID string) tea.Cmd {
-	if m.channelCancel != nil {
-		m.channelCancel()
+	if len(m.channels) > 0 {
+		m.addSystemMsg(fmt.Sprintf("joining #%s ...", m.channels[0].Name))
+	} else {
+		m.addSystemMsg("no rooms configured — use /create #name or /join <event-id>")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	m.channelCancel = cancel
 
-	ch := m.pool.SubscribeMany(ctx, m.relays, nostr.Filter{
-		Kinds: []int{42},
-		Tags:  nostr.TagMap{"e": {channelID}},
-		Limit: 50,
-	})
-	m.channelEvents = ch
-
-	return waitForChannelEvent(ch, m.keys)
+	cmds := []tea.Cmd{
+		textarea.Blink,
+		subscribeDMCmd(m.pool, m.relays, m.keys.PK),
+	}
+	if len(m.channels) > 0 {
+		cmds = append(cmds, subscribeChannelCmd(m.pool, m.relays, m.channels[0].ID))
+	}
+	return tea.Batch(cmds...)
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		log.Printf("WindowSizeMsg: %dx%d", msg.Width, msg.Height)
 		m.width = msg.Width
 		m.height = msg.Height
 		m.updateLayout()
 		return m, nil
 
-	case channelsLoadedMsg:
-		// Append or replace channels
-		if m.channels == nil {
-			m.channels = []Channel(msg)
+	case channelCreatedMsg:
+		log.Printf("channelCreatedMsg: id=%s name=%q", msg.ID, msg.Name)
+		m.channels = append(m.channels, Channel{ID: msg.ID, Name: msg.Name})
+		m.tab = tabChannels
+		m.activeChannel = len(m.channels) - 1
+		room := Room{Name: msg.Name, ID: msg.ID}
+		if err := AppendRoom(m.cfgFlagPath, room); err != nil {
+			log.Printf("channelCreatedMsg: failed to save room: %v", err)
+			m.addSystemMsg("failed to save room: " + err.Error())
 		} else {
-			m.channels = append(m.channels, []Channel(msg)...)
+			m.rooms = append(m.rooms, room)
 		}
-		// Auto-open first channel if none active
-		if len(m.channels) > 0 && m.channelEvents == nil {
-			m.activeChannel = 0
-			cmd := m.startChannelSubscription(m.channels[0].ID)
-			return m, cmd
+		m.updateViewport()
+		return m, subscribeChannelCmd(m.pool, m.relays, msg.ID)
+
+	case channelMetaMsg:
+		log.Printf("channelMetaMsg: id=%s name=%q", msg.ID, msg.Name)
+		// Update the channel name in our list
+		for i, ch := range m.channels {
+			if ch.ID == msg.ID {
+				m.channels[i].Name = msg.Name
+				break
+			}
+		}
+		// Save to rooms file
+		room := Room{Name: msg.Name, ID: msg.ID}
+		if err := AppendRoom(m.cfgFlagPath, room); err != nil {
+			log.Printf("channelMetaMsg: failed to save room: %v", err)
+			m.addSystemMsg("failed to save room: " + err.Error())
+		} else {
+			m.rooms = append(m.rooms, room)
 		}
 		return m, nil
 
+	case channelSubStartedMsg:
+		log.Println("channelSubStartedMsg received")
+		if m.channelCancel != nil {
+			m.channelCancel()
+		}
+		m.channelSubID = msg.channelID
+		m.channelEvents = msg.events
+		m.channelCancel = msg.cancel
+		if len(m.channels) > 0 {
+			m.addSystemMsg("subscribed to #" + m.channels[m.activeChannel].Name)
+		}
+		return m, waitForChannelEvent(m.channelEvents, m.channelSubID, m.keys)
+
+	case dmSubStartedMsg:
+		log.Println("dmSubStartedMsg received")
+		if m.dmCancel != nil {
+			m.dmCancel()
+		}
+		m.dmEvents = msg.events
+		m.dmCancel = msg.cancel
+		m.addSystemMsg("DM subscription active")
+		return m, waitForDMEvent(m.dmEvents, m.keys)
+
 	case channelEventMsg:
 		cm := ChatMessage(msg)
-		if len(m.channels) > 0 {
-			chID := m.channels[m.activeChannel].ID
-			m.channelMsgs[chID] = appendMessage(m.channelMsgs[chID], cm, m.cfg.MaxMessages)
+		log.Printf("channelEventMsg: author=%s channel=%s id=%s", cm.Author, cm.ChannelID, cm.EventID)
+		if m.seenEvents[cm.EventID] {
+			if m.channelEvents != nil {
+				return m, waitForChannelEvent(m.channelEvents, m.channelSubID, m.keys)
+			}
+			return m, nil
+		}
+		m.seenEvents[cm.EventID] = true
+		chID := cm.ChannelID
+		m.channelMsgs[chID] = appendMessage(m.channelMsgs[chID], cm, m.cfg.MaxMessages)
+		if chID == m.channels[m.activeChannel].ID {
 			m.updateViewport()
 		}
-		// Re-chain to keep listening
 		if m.channelEvents != nil {
-			return m, waitForChannelEvent(m.channelEvents, m.keys)
+			return m, waitForChannelEvent(m.channelEvents, m.channelSubID, m.keys)
 		}
 		return m, nil
 
 	case dmEventMsg:
 		cm := ChatMessage(msg)
-		peer := cm.Author
-		if cm.IsMine {
-			// Shouldn't happen for incoming DMs, but handle it
-			peer = cm.Author
+		log.Printf("dmEventMsg: author=%s id=%s", cm.Author, cm.EventID)
+		if m.seenEvents[cm.EventID] {
+			if m.dmEvents != nil {
+				return m, waitForDMEvent(m.dmEvents, m.keys)
+			}
+			return m, nil
 		}
+		m.seenEvents[cm.EventID] = true
+		peer := cm.Author
 		m.dmMsgs[peer] = appendMessage(m.dmMsgs[peer], cm, m.cfg.MaxMessages)
-		// Add peer to list if new
 		if !containsStr(m.dmPeers, peer) {
 			m.dmPeers = append(m.dmPeers, peer)
 		}
 		if m.tab == tabDMs {
 			m.updateViewport()
 		}
-		// Re-chain DM listener
 		if m.dmEvents != nil {
 			return m, waitForDMEvent(m.dmEvents, m.keys)
 		}
 		return m, nil
 
-	case publishedMsg:
-		return m, nil
-
 	case nostrErrMsg:
-		m.errMsg = msg.Error()
+		log.Printf("nostrErrMsg: %s", msg.Error())
+		m.addSystemMsg(msg.Error())
 		return m, nil
 
 	case tea.KeyMsg:
-		// Handle modal input first
-		if m.modal != modalNone {
-			return m.handleModalKey(msg)
-		}
-
 		switch msg.String() {
 		case "ctrl+c":
 			if m.channelCancel != nil {
@@ -238,59 +261,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 
-		case "tab":
-			if m.focus == focusSidebar {
-				if m.tab == tabChannels {
-					m.tab = tabDMs
-				} else {
-					m.tab = tabChannels
+		case "ctrl+up":
+			if m.tab == tabChannels && len(m.channels) > 1 {
+				m.activeChannel--
+				if m.activeChannel < 0 {
+					m.activeChannel = len(m.channels) - 1
 				}
-				m.sidebarIdx = 0
 				m.updateViewport()
+				return m, subscribeChannelCmd(m.pool, m.relays, m.channels[m.activeChannel].ID)
 			}
 			return m, nil
 
-		case "ctrl+n":
-			m.modal = modalCreateChannel
-			m.modalInput.Placeholder = "Channel name..."
-			m.modalInput.Reset()
-			m.modalInput.Focus()
-			return m, nil
-
-		case "ctrl+d":
-			m.modal = modalNewDM
-			m.modalInput.Placeholder = "Recipient npub..."
-			m.modalInput.Reset()
-			m.modalInput.Focus()
-			return m, nil
-
-		case "esc":
-			if m.focus == focusInput {
-				m.focus = focusSidebar
-				m.input.Blur()
+		case "ctrl+down":
+			if m.tab == tabChannels && len(m.channels) > 1 {
+				m.activeChannel++
+				if m.activeChannel >= len(m.channels) {
+					m.activeChannel = 0
+				}
+				m.updateViewport()
+				return m, subscribeChannelCmd(m.pool, m.relays, m.channels[m.activeChannel].ID)
 			}
+			return m, nil
+
+		case "pgup":
+			m.viewport.ScrollUp(10)
+			return m, nil
+
+		case "pgdown":
+			m.viewport.ScrollDown(10)
 			return m, nil
 
 		case "enter":
-			if m.focus == focusSidebar {
-				m.focus = focusInput
-				m.input.Focus()
-				// Open selected channel/DM
-				if m.tab == tabChannels && len(m.channels) > 0 {
-					m.activeChannel = m.sidebarIdx
-					cmd := m.startChannelSubscription(m.channels[m.activeChannel].ID)
-					m.updateViewport()
-					return m, cmd
-				}
-				return m, nil
-			}
-			// Send message
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, nil
 			}
 			m.input.Reset()
 
+			// Slash commands
+			if strings.HasPrefix(text, "/") {
+				return m.handleCommand(text)
+			}
+
+			// Regular message
 			if m.tab == tabChannels && len(m.channels) > 0 {
 				chID := m.channels[m.activeChannel].ID
 				return m, publishChannelMessage(m.pool, m.relays, chID, text, m.keys)
@@ -300,97 +313,148 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, sendDM(m.pool, m.relays, peer, text, m.keys)
 			}
 			return m, nil
-
-		case "up", "k":
-			if m.focus == focusSidebar {
-				if m.sidebarIdx > 0 {
-					m.sidebarIdx--
-				}
-				return m, nil
-			}
-
-		case "down", "j":
-			if m.focus == focusSidebar {
-				max := m.sidebarLen() - 1
-				if max < 0 {
-					max = 0
-				}
-				if m.sidebarIdx < max {
-					m.sidebarIdx++
-				}
-				return m, nil
-			}
-
-		case "pgup":
-			m.viewport.ScrollUp(10)
-			return m, nil
-
-		case "pgdown":
-			m.viewport.ScrollDown(10)
-			return m, nil
 		}
 	}
 
-	// Pass remaining keys to textarea when focused
-	if m.focus == focusInput {
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		cmds = append(cmds, cmd)
-	}
+	// Always pass keys to textarea
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
 }
 
-func (m model) handleModalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.modal = modalNone
-		m.modalInput.Blur()
-		return m, nil
-	case "enter":
-		val := strings.TrimSpace(m.modalInput.Value())
-		mode := m.modal
-		m.modal = modalNone
-		m.modalInput.Blur()
-		if val == "" {
-			return m, nil
-		}
+func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
+	parts := strings.SplitN(text, " ", 2)
+	cmd := strings.ToLower(parts[0])
+	arg := ""
+	if len(parts) > 1 {
+		arg = strings.TrimSpace(parts[1])
+	}
 
-		switch mode {
-		case modalCreateChannel:
-			return m, createChannel(m.pool, m.relays, val, m.keys)
-		case modalNewDM:
-			// Decode npub to hex pubkey
-			pk := val
-			if strings.HasPrefix(val, "npub") {
-				prefix, decoded, err := nip19.Decode(val)
-				if err != nil || prefix != "npub" {
-					m.errMsg = "invalid npub"
-					return m, nil
-				}
-				pk = decoded.(string)
-			}
-			if !containsStr(m.dmPeers, pk) {
-				m.dmPeers = append(m.dmPeers, pk)
-			}
-			m.tab = tabDMs
-			for i, p := range m.dmPeers {
-				if p == pk {
-					m.activeDMPeer = i
-					m.sidebarIdx = i
-					break
-				}
-			}
-			m.focus = focusInput
-			m.input.Focus()
-			m.updateViewport()
+	switch cmd {
+	case "/create":
+		if arg == "" || !strings.HasPrefix(arg, "#") {
+			m.addSystemMsg("usage: /create #roomname")
 			return m, nil
 		}
+		name := strings.TrimPrefix(arg, "#")
+		return m, createChannelCmd(m.pool, m.relays, name, m.keys)
+
+	case "/join":
+		if arg == "" {
+			m.addSystemMsg("usage: /join #name or /join <event-id>")
+			return m, nil
+		}
+		return m.joinChannel(arg)
+
+	case "/dm":
+		if arg == "" {
+			m.addSystemMsg("usage: /dm <npub or hex pubkey>")
+			return m, nil
+		}
+		return m.openDM(arg)
+
+	case "/help":
+		m.addSystemMsg("/create #name — create a new channel")
+		m.addSystemMsg("/join #name — join a channel from your rooms file")
+		m.addSystemMsg("/join <event-id> — join a channel by ID")
+		m.addSystemMsg("/dm <npub> — open a DM conversation")
+		m.addSystemMsg("/help — show this help")
+		return m, nil
+
+	default:
+		m.addSystemMsg("unknown command: " + cmd)
 		return m, nil
 	}
-	var cmd tea.Cmd
-	m.modalInput, cmd = m.modalInput.Update(msg)
-	return m, cmd
+}
+
+// joinChannel handles /join. #name looks up the rooms file, a raw hex ID
+// joins directly and appends to the rooms file.
+func (m *model) joinChannel(arg string) (tea.Model, tea.Cmd) {
+	if strings.HasPrefix(arg, "#") {
+		// Lookup by name
+		name := strings.TrimPrefix(arg, "#")
+		for i, ch := range m.channels {
+			if strings.EqualFold(ch.Name, name) {
+				log.Printf("joinChannel: found %q -> %s", name, ch.ID)
+				m.tab = tabChannels
+				m.activeChannel = i
+				m.updateViewport()
+				return m, subscribeChannelCmd(m.pool, m.relays, ch.ID)
+			}
+		}
+		m.addSystemMsg("unknown room: " + name + " (add it to your rooms file)")
+		return m, nil
+	}
+
+	// Raw hex event ID — check if already known
+	id := arg
+	for i, ch := range m.channels {
+		if ch.ID == id {
+			log.Printf("joinChannel: already have %s as %q", id, ch.Name)
+			m.tab = tabChannels
+			m.activeChannel = i
+			m.updateViewport()
+			return m, subscribeChannelCmd(m.pool, m.relays, ch.ID)
+		}
+	}
+
+	// New room — add with placeholder, fetch metadata to get the real name
+	m.channels = append(m.channels, Channel{Name: id[:8], ID: id})
+	m.tab = tabChannels
+	m.activeChannel = len(m.channels) - 1
+	m.updateViewport()
+	return m, tea.Batch(
+		subscribeChannelCmd(m.pool, m.relays, id),
+		fetchChannelMetaCmd(m.pool, m.relays, id),
+	)
+}
+
+// openDM switches to a DM conversation, adding the peer if new.
+func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
+	pk := input
+	if strings.HasPrefix(input, "npub") {
+		prefix, decoded, err := nip19.Decode(input)
+		if err != nil || prefix != "npub" {
+			m.addSystemMsg("invalid npub")
+			return m, nil
+		}
+		pk = decoded.(string)
+	}
+
+	if !containsStr(m.dmPeers, pk) {
+		m.dmPeers = append(m.dmPeers, pk)
+	}
+
+	m.tab = tabDMs
+	for i, p := range m.dmPeers {
+		if p == pk {
+			m.activeDMPeer = i
+			break
+		}
+	}
+	m.updateViewport()
+	return m, nil
+}
+
+// addSystemMsg appends a local-only notice into the current chat view.
+func (m *model) addSystemMsg(text string) {
+	msg := ChatMessage{
+		Author:    "system",
+		Content:   text,
+		Timestamp: nostr.Now(),
+	}
+	if m.tab == tabChannels && len(m.channels) > 0 {
+		chID := m.channels[m.activeChannel].ID
+		m.channelMsgs[chID] = appendMessage(m.channelMsgs[chID], msg, m.cfg.MaxMessages)
+	} else if m.tab == tabDMs && len(m.dmPeers) > 0 {
+		peer := m.dmPeers[m.activeDMPeer]
+		m.dmMsgs[peer] = appendMessage(m.dmMsgs[peer], msg, m.cfg.MaxMessages)
+	} else {
+		m.globalMsgs = appendMessage(m.globalMsgs, msg, m.cfg.MaxMessages)
+	}
+	m.updateViewport()
 }
 
 func (m *model) updateLayout() {
@@ -407,7 +471,7 @@ func (m *model) updateLayout() {
 	m.viewport.Width = contentWidth
 	m.viewport.Height = contentHeight
 	m.input.SetWidth(contentWidth)
-	m.mdRender = newMarkdownRenderer(contentWidth - 4)
+	m.mdRender = newMarkdownRenderer(contentWidth-4, m.mdStyle)
 }
 
 func (m *model) updateViewport() {
@@ -418,10 +482,16 @@ func (m *model) updateViewport() {
 	} else if m.tab == tabDMs && len(m.dmPeers) > 0 {
 		peer := m.dmPeers[m.activeDMPeer]
 		msgs = m.dmMsgs[peer]
+	} else {
+		msgs = m.globalMsgs
 	}
 
 	var lines []string
 	for _, msg := range msgs {
+		if msg.Author == "system" {
+			lines = append(lines, chatSystemStyle.Render("  "+msg.Content))
+			continue
+		}
 		authorStyle := chatAuthorStyle
 		if msg.IsMine {
 			authorStyle = chatOwnAuthorStyle
@@ -437,21 +507,9 @@ func (m *model) updateViewport() {
 	m.viewport.GotoBottom()
 }
 
-func (m model) sidebarLen() int {
-	if m.tab == tabChannels {
-		return len(m.channels)
-	}
-	return len(m.dmPeers)
-}
-
-func (m model) View() string {
+func (m *model) View() string {
 	if m.width == 0 {
 		return "Loading..."
-	}
-
-	// Modal overlay
-	if m.modal != modalNone {
-		return m.viewModal()
 	}
 
 	header := m.viewHeader()
@@ -459,13 +517,12 @@ func (m model) View() string {
 	content := m.viewContent()
 	statusBar := m.viewStatusBar()
 
-	// Join sidebar and content horizontally
 	mainArea := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, mainArea, statusBar)
 }
 
-func (m model) viewHeader() string {
+func (m *model) viewHeader() string {
 	channelsTab := tabInactiveStyle.Render("[channels]")
 	dmsTab := tabInactiveStyle.Render("[dms]")
 	if m.tab == tabChannels {
@@ -485,9 +542,8 @@ func (m model) viewHeader() string {
 	return title + strings.Repeat(" ", gap) + tabs
 }
 
-func (m model) viewSidebar() string {
+func (m *model) viewSidebar() string {
 	contentHeight := m.height - headerHeight - statusHeight
-
 	var items []string
 	if m.tab == tabChannels {
 		for i, ch := range m.channels {
@@ -495,7 +551,7 @@ func (m model) viewSidebar() string {
 			if len(name) > sidebarWidth-2 {
 				name = name[:sidebarWidth-2]
 			}
-			if i == m.sidebarIdx && m.focus == focusSidebar {
+			if i == m.activeChannel {
 				items = append(items, sidebarSelectedStyle.Render(name))
 			} else {
 				items = append(items, sidebarItemStyle.Render(name))
@@ -507,7 +563,7 @@ func (m model) viewSidebar() string {
 			if len(name) > sidebarWidth-2 {
 				name = name[:sidebarWidth-2]
 			}
-			if i == m.sidebarIdx && m.focus == focusSidebar {
+			if i == m.activeDMPeer {
 				items = append(items, sidebarSelectedStyle.Render(name))
 			} else {
 				items = append(items, sidebarItemStyle.Render(name))
@@ -516,23 +572,13 @@ func (m model) viewSidebar() string {
 	}
 
 	content := strings.Join(items, "\n")
-	// Pad to fill height
-	lines := strings.Count(content, "\n") + 1
-	if content == "" {
-		lines = 0
-	}
-	for lines < contentHeight {
-		content += "\n"
-		lines++
-	}
 
-	return sidebarStyle.Height(contentHeight).Render(content)
+	return sidebarStyle.Height(contentHeight).MaxHeight(contentHeight).Render(content)
 }
 
-func (m model) viewContent() string {
-	contentHeight := m.height - headerHeight - statusHeight - inputHeight
+func (m *model) viewContent() string {
+	totalHeight := m.height - headerHeight - statusHeight
 
-	// Room title
 	var title string
 	if m.tab == tabChannels && len(m.channels) > 0 {
 		title = "#" + m.channels[m.activeChannel].Name
@@ -540,32 +586,22 @@ func (m model) viewContent() string {
 		title = "@" + m.dmPeers[m.activeDMPeer]
 	}
 
-	vp := m.viewport.View()
-
-	// Pad viewport to fill height
-	vpLines := strings.Count(vp, "\n") + 1
-	for vpLines < contentHeight-1 {
-		vp += "\n"
-		vpLines++
-	}
-
 	titleBar := headerStyle.Render(title)
 	inputView := m.input.View()
+	vp := m.viewport.View()
 
-	return lipgloss.JoinVertical(lipgloss.Left, titleBar, vp, inputView)
+	inner := lipgloss.JoinVertical(lipgloss.Left, titleBar, vp, inputView)
+
+	return lipgloss.NewStyle().Height(totalHeight).MaxHeight(totalHeight).Render(inner)
 }
 
-func (m model) viewStatusBar() string {
-	left := statusConnectedStyle.Render(fmt.Sprintf("● %d relays", len(m.relays)))
+func (m *model) viewStatusBar() string {
+	left := statusConnectedStyle.Render(fmt.Sprintf("● %d relays · %d rooms", len(m.relays), len(m.channels)))
 	npub := m.keys.NPub
 	if len(npub) > 20 {
 		npub = npub[:20] + "..."
 	}
 	right := npub
-
-	if m.errMsg != "" {
-		left = statusErrorStyle.Render("✗ " + m.errMsg)
-	}
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
 	if gap < 0 {
@@ -574,27 +610,6 @@ func (m model) viewStatusBar() string {
 
 	bar := left + strings.Repeat(" ", gap) + right
 	return statusBarStyle.Width(m.width).Render(bar)
-}
-
-func (m model) viewModal() string {
-	var title string
-	switch m.modal {
-	case modalCreateChannel:
-		title = "Create Channel"
-	case modalNewDM:
-		title = "New DM (enter npub)"
-	}
-
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		headerStyle.Render(title),
-		"",
-		m.modalInput.View(),
-		"",
-		chatTimestampStyle.Render("Enter to confirm · Esc to cancel"),
-	)
-
-	modal := modalStyle.Render(content)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 }
 
 func appendMessage(msgs []ChatMessage, msg ChatMessage, maxMessages int) []ChatMessage {

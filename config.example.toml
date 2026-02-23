@@ -1,7 +1,5 @@
 relays = [
   "wss://nostr.0cx.de",
-  "wss://relay.damus.io",
-  "wss://nos.lol",
 ]
 
 display_name = "anon"
