@@ -12,6 +12,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/reflow/wordwrap"
+	"github.com/muesli/reflow/wrap"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
@@ -576,7 +579,6 @@ func (m *model) updateLayout() {
 	m.viewport.Width = contentWidth
 	m.viewport.Height = contentHeight
 	m.input.SetWidth(contentWidth)
-	m.mdRender = newMarkdownRenderer(contentWidth-4, m.mdStyle)
 	m.updateViewport()
 }
 
@@ -614,10 +616,38 @@ func (m *model) updateViewport() {
 		author := authorStyle.Render(displayName)
 		// Convert single newlines to paragraph breaks for glamour.
 		mdContent := strings.ReplaceAll(msg.Content, "\n", "\n\n")
-		content := strings.TrimSpace(renderMarkdown(m.mdRender, mdContent))
+		content := renderMarkdown(m.mdRender, mdContent)
 		prefix := fmt.Sprintf("%s %s: ", ts, author)
-		pad := strings.Repeat(" ", lipgloss.Width(prefix))
-		contentLines := strings.Split(content, "\n")
+		prefixW := lipgloss.Width(prefix)
+		pad := strings.Repeat(" ", prefixW)
+		wrapWidth := m.viewport.Width - prefixW
+		// Trim leading/trailing blank lines from glamour output.
+		// strings.TrimSpace can't handle ANSI codes, and lipgloss.Width
+		// counts indentation spaces as visible. Strip ANSI first, then
+		// check for whitespace-only content.
+		rawLines := strings.Split(content, "\n")
+		for len(rawLines) > 0 && strings.TrimSpace(ansi.Strip(rawLines[0])) == "" {
+			rawLines = rawLines[1:]
+		}
+		for len(rawLines) > 0 && strings.TrimSpace(ansi.Strip(rawLines[len(rawLines)-1])) == "" {
+			rawLines = rawLines[:len(rawLines)-1]
+		}
+		// Word-wrap at word boundaries, then hard-wrap any remaining
+		// overflows (long unbroken words like URLs).
+		var contentLines []string
+		for _, cl := range rawLines {
+			wrapped := wordwrap.String(cl, wrapWidth)
+			for _, wl := range strings.Split(wrapped, "\n") {
+				if lipgloss.Width(wl) > wrapWidth {
+					contentLines = append(contentLines, strings.Split(wrap.String(wl, wrapWidth), "\n")...)
+				} else {
+					contentLines = append(contentLines, wl)
+				}
+			}
+		}
+		if len(contentLines) == 0 {
+			contentLines = []string{""}
+		}
 		first := prefix + contentLines[0]
 		lines = append(lines, first)
 		for _, cl := range contentLines[1:] {

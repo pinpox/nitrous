@@ -54,7 +54,7 @@ func main() {
 	// background-color query (OSC 11) completes while stdio is still normal.
 	// Detect style once, store it for re-creation on resize.
 	mdStyle := detectGlamourStyle()
-	mdRender := newMarkdownRenderer(60, mdStyle)
+	mdRender := newMarkdownRenderer(mdStyle)
 
 	pool := nostr.NewSimplePool(context.Background())
 

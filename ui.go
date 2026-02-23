@@ -123,12 +123,14 @@ func detectGlamourStyle() string {
 	return "light"
 }
 
-// newMarkdownRenderer creates a glamour terminal renderer at the given width.
+// newMarkdownRenderer creates a glamour terminal renderer.
 // style should be "dark" or "light" (detected once at startup via detectGlamourStyle).
-func newMarkdownRenderer(width int, style string) *glamour.TermRenderer {
+// Word wrapping is disabled here; the chat renderer handles wrapping itself
+// to account for the per-message prefix width.
+func newMarkdownRenderer(style string) *glamour.TermRenderer {
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStylePath(style),
-		glamour.WithWordWrap(width),
+		glamour.WithWordWrap(0),
 	)
 	if err != nil {
 		return nil
