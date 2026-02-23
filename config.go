@@ -10,11 +10,19 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+type ProfileConfig struct {
+	Name        string `toml:"name"`
+	DisplayName string `toml:"display_name"`
+	About       string `toml:"about"`
+	Picture     string `toml:"picture"`
+}
+
 type Config struct {
-	Relays      []string `toml:"relays"`
-	DisplayName string   `toml:"display_name"`
-	MaxMessages int      `toml:"max_messages"`
-	Bookmarks   []string `toml:"bookmarks"`
+	Relays      []string      `toml:"relays"`
+	DisplayName string        `toml:"display_name"`
+	MaxMessages int           `toml:"max_messages"`
+	Bookmarks   []string      `toml:"bookmarks"`
+	Profile     ProfileConfig `toml:"profile"`
 }
 
 // Room maps a human-readable name to a kind-40 event ID.
@@ -68,6 +76,11 @@ func LoadConfig(flagPath string) (Config, error) {
 	}
 	if len(cfg.Relays) == 0 {
 		cfg.Relays = defaultConfig().Relays
+	}
+
+	// Backward compat: copy top-level display_name into profile if not set.
+	if cfg.Profile.DisplayName == "" && cfg.DisplayName != "" {
+		cfg.Profile.DisplayName = cfg.DisplayName
 	}
 
 	return cfg, nil

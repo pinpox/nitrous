@@ -31,6 +31,7 @@ type Channel struct {
 // ChatMessage represents a message displayed in the TUI.
 type ChatMessage struct {
 	Author    string
+	PubKey    string // full 64-char hex pubkey of the author
 	Content   string
 	Timestamp nostr.Timestamp
 	EventID   string
@@ -65,6 +66,12 @@ type channelMetaMsg struct {
 type channelCreatedMsg struct {
 	ID   string
 	Name string
+}
+
+// profileResolvedMsg is returned after fetching a kind-0 profile for a pubkey.
+type profileResolvedMsg struct {
+	PubKey      string
+	DisplayName string
 }
 
 func (e nostrErrMsg) Error() string { return e.err.Error() }
@@ -193,6 +200,7 @@ func waitForChannelEvent(events <-chan nostr.RelayEvent, channelID string, keys 
 		}
 		return channelEventMsg(ChatMessage{
 			Author:    shortPK(re.PubKey),
+			PubKey:    re.PubKey,
 			Content:   re.Content,
 			Timestamp: re.CreatedAt,
 			EventID:   re.ID,
@@ -224,6 +232,7 @@ func publishChannelMessage(pool *nostr.SimplePool, relays []string, channelID st
 
 		return channelEventMsg(ChatMessage{
 			Author:    shortPK(keys.PK),
+			PubKey:    keys.PK,
 			Content:   content,
 			Timestamp: evt.CreatedAt,
 			EventID:   evt.GetID(),
@@ -251,6 +260,7 @@ func waitForDMEvent(events <-chan nostr.RelayEvent, keys Keys) tea.Cmd {
 
 		return dmEventMsg(ChatMessage{
 			Author:    shortPK(re.PubKey),
+			PubKey:    re.PubKey,
 			Content:   content,
 			Timestamp: re.CreatedAt,
 			EventID:   re.ID,
@@ -291,11 +301,90 @@ func sendDM(pool *nostr.SimplePool, relays []string, recipientPK string, content
 
 		return dmEventMsg(ChatMessage{
 			Author:    shortPK(keys.PK),
+			PubKey:    keys.PK,
 			Content:   content,
 			Timestamp: evt.CreatedAt,
 			EventID:   evt.GetID(),
 			IsMine:    true,
 		})
+	}
+}
+
+// fetchProfileCmd fetches a kind-0 event (NIP-01 profile metadata) for a pubkey.
+func fetchProfileCmd(pool *nostr.SimplePool, relays []string, pubkey string) tea.Cmd {
+	return func() tea.Msg {
+		log.Printf("fetchProfile: pubkey=%s", shortPK(pubkey))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		re := pool.QuerySingle(ctx, relays, nostr.Filter{
+			Kinds:   []int{0},
+			Authors: []string{pubkey},
+		})
+		if re == nil {
+			log.Printf("fetchProfile: not found for %s", shortPK(pubkey))
+			return profileResolvedMsg{PubKey: pubkey, DisplayName: shortPK(pubkey)}
+		}
+
+		var meta struct {
+			Name        string `json:"name"`
+			DisplayName string `json:"display_name"`
+		}
+		if err := json.Unmarshal([]byte(re.Content), &meta); err != nil {
+			log.Printf("fetchProfile: bad JSON for %s: %v", shortPK(pubkey), err)
+			return profileResolvedMsg{PubKey: pubkey, DisplayName: shortPK(pubkey)}
+		}
+
+		name := meta.DisplayName
+		if name == "" {
+			name = meta.Name
+		}
+		if name == "" {
+			name = shortPK(pubkey)
+		}
+
+		log.Printf("fetchProfile: resolved %s -> %q", shortPK(pubkey), name)
+		return profileResolvedMsg{PubKey: pubkey, DisplayName: name}
+	}
+}
+
+// publishProfileCmd publishes a kind-0 event with the user's profile metadata.
+func publishProfileCmd(pool *nostr.SimplePool, relays []string, profile ProfileConfig, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		meta := map[string]string{}
+		if profile.Name != "" {
+			meta["name"] = profile.Name
+		}
+		if profile.DisplayName != "" {
+			meta["display_name"] = profile.DisplayName
+		}
+		if profile.About != "" {
+			meta["about"] = profile.About
+		}
+		if profile.Picture != "" {
+			meta["picture"] = profile.Picture
+		}
+
+		content, err := json.Marshal(meta)
+		if err != nil {
+			return nostrErrMsg{fmt.Errorf("publishProfile: marshal: %w", err)}
+		}
+
+		evt := nostr.Event{
+			Kind:      0,
+			CreatedAt: nostr.Now(),
+			Content:   string(content),
+		}
+		if err := evt.Sign(keys.SK); err != nil {
+			return nostrErrMsg{fmt.Errorf("publishProfile: sign: %w", err)}
+		}
+
+		ctx := context.Background()
+		for range pool.PublishMany(ctx, relays, evt) {
+		}
+
+		log.Printf("publishProfile: published kind 0")
+		return nil
 	}
 }
 

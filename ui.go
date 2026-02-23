@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/hex"
+
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -18,12 +20,43 @@ var (
 	colorRed      = lipgloss.Color("#F7768E")
 )
 
+// Distinct author colors — chosen for readability on dark backgrounds.
+var authorColors = []lipgloss.Color{
+	"#7B68EE", // medium slate blue
+	"#FF6B6B", // coral red
+	"#4ECDC4", // teal
+	"#FFD93D", // gold
+	"#C084FC", // violet
+	"#FF8C42", // orange
+	"#6BCB77", // green
+	"#4D96FF", // blue
+	"#FF6EC7", // hot pink
+	"#00D2FF", // cyan
+	"#E879F9", // fuchsia
+	"#A3E635", // lime
+}
+
+// colorForPubkey derives a stable color from a hex pubkey.
+func colorForPubkey(pubkey string) lipgloss.Color {
+	if len(pubkey) < 2 {
+		return authorColors[0]
+	}
+	b, err := hex.DecodeString(pubkey[:2])
+	if err != nil || len(b) == 0 {
+		return authorColors[0]
+	}
+	return authorColors[int(b[0])%len(authorColors)]
+}
+
 // Layout constants
 const (
-	sidebarWidth = 22
-	inputHeight  = 3
-	headerHeight = 1
-	statusHeight = 1
+	sidebarWidth     = 22
+	sidebarBorder    = 1 // right border on sidebar
+	inputMinHeight   = 1
+	inputMaxHeight   = 8
+	headerHeight     = 1 // top tab bar
+	contentTitleHeight = 1 // channel/DM name above viewport
+	statusHeight     = 1 // bottom status bar
 )
 
 // Styles

@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -65,6 +66,13 @@ type model struct {
 	// Dedup
 	seenEvents map[string]bool
 
+	// Profile resolution (NIP-01 kind 0)
+	profiles       map[string]string // pubkey -> display name
+	profilePending map[string]bool   // pubkeys with in-flight fetches
+
+	// Input tracking
+	lastInputHeight int
+
 	// Status
 	statusMsg string
 }
@@ -74,10 +82,12 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 	ta.Placeholder = "Type a message... (/help for commands)"
 	ta.Prompt = "> "
 	ta.CharLimit = 2000
-	ta.MaxHeight = inputHeight
+	ta.SetHeight(inputMinHeight)
+	ta.MaxHeight = inputMaxHeight
 	ta.ShowLineNumbers = false
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "ctrl+j"))
 	ta.Focus()
 
 	vp := viewport.New(80, 20)
@@ -87,6 +97,18 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 	for _, r := range rooms {
 		channels = append(channels, Channel{ID: r.ID, Name: r.Name})
 	}
+
+	// Pre-cache own display name from config fallback chain.
+	ownName := shortPK(keys.PK)
+	if cfg.Profile.DisplayName != "" {
+		ownName = cfg.Profile.DisplayName
+	} else if cfg.Profile.Name != "" {
+		ownName = cfg.Profile.Name
+	} else if cfg.DisplayName != "" {
+		ownName = cfg.DisplayName
+	}
+
+	profiles := map[string]string{keys.PK: ownName}
 
 	return model{
 		cfg:         cfg,
@@ -98,16 +120,19 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		width:  80,
 		height: 24,
 		tab:    tabChannels,
-		channels:    channels,
-		channelMsgs: make(map[string][]ChatMessage),
-		dmMsgs:      make(map[string][]ChatMessage),
-		dmPeers:     []string{},
-		seenEvents:  make(map[string]bool),
-		viewport:    vp,
-		input:       ta,
-		mdRender:    mdRender,
-		mdStyle:     mdStyle,
-		statusMsg:   fmt.Sprintf("connected to %d relays", len(cfg.Relays)),
+		channels:       channels,
+		channelMsgs:    make(map[string][]ChatMessage),
+		dmMsgs:         make(map[string][]ChatMessage),
+		dmPeers:        []string{},
+		seenEvents:     make(map[string]bool),
+		profiles:        profiles,
+		profilePending:  make(map[string]bool),
+		lastInputHeight: inputMinHeight,
+		viewport:        vp,
+		input:          ta,
+		mdRender:       mdRender,
+		mdStyle:        mdStyle,
+		statusMsg:      fmt.Sprintf("connected to %d relays", len(cfg.Relays)),
 	}
 }
 
@@ -130,6 +155,9 @@ func (m *model) Init() tea.Cmd {
 	}
 	if len(m.channels) > 0 {
 		cmds = append(cmds, subscribeChannelCmd(m.pool, m.relays, m.channels[0].ID))
+	}
+	if m.cfg.Profile.Name != "" || m.cfg.Profile.DisplayName != "" || m.cfg.Profile.About != "" || m.cfg.Profile.Picture != "" {
+		cmds = append(cmds, publishProfileCmd(m.pool, m.relays, m.cfg.Profile, m.keys))
 	}
 	return tea.Batch(cmds...)
 }
@@ -217,10 +245,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if chID == m.channels[m.activeChannel].ID {
 			m.updateViewport()
 		}
-		if m.channelEvents != nil {
-			return m, waitForChannelEvent(m.channelEvents, m.channelSubID, m.keys)
+		var batchCmds []tea.Cmd
+		if profileCmd := m.maybeRequestProfile(cm.PubKey); profileCmd != nil {
+			batchCmds = append(batchCmds, profileCmd)
 		}
-		return m, nil
+		if m.channelEvents != nil {
+			batchCmds = append(batchCmds, waitForChannelEvent(m.channelEvents, m.channelSubID, m.keys))
+		}
+		return m, tea.Batch(batchCmds...)
 
 	case dmEventMsg:
 		cm := ChatMessage(msg)
@@ -232,7 +264,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.seenEvents[cm.EventID] = true
-		peer := cm.Author
+		peer := cm.PubKey
 		m.dmMsgs[peer] = appendMessage(m.dmMsgs[peer], cm, m.cfg.MaxMessages)
 		if !containsStr(m.dmPeers, peer) {
 			m.dmPeers = append(m.dmPeers, peer)
@@ -240,9 +272,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tab == tabDMs {
 			m.updateViewport()
 		}
-		if m.dmEvents != nil {
-			return m, waitForDMEvent(m.dmEvents, m.keys)
+		var batchCmds []tea.Cmd
+		if profileCmd := m.maybeRequestProfile(peer); profileCmd != nil {
+			batchCmds = append(batchCmds, profileCmd)
 		}
+		if m.dmEvents != nil {
+			batchCmds = append(batchCmds, waitForDMEvent(m.dmEvents, m.keys))
+		}
+		return m, tea.Batch(batchCmds...)
+
+	case profileResolvedMsg:
+		log.Printf("profileResolvedMsg: %s -> %q", shortPK(msg.PubKey), msg.DisplayName)
+		m.profiles[msg.PubKey] = msg.DisplayName
+		delete(m.profilePending, msg.PubKey)
+		m.updateViewport()
 		return m, nil
 
 	case nostrErrMsg:
@@ -297,6 +340,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.input.Reset()
+			m.input.SetHeight(inputMinHeight)
+			m.lastInputHeight = inputMinHeight
+			m.updateLayout()
 
 			// Slash commands
 			if strings.HasPrefix(text, "/") {
@@ -316,10 +362,29 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Pre-grow textarea before newline insertion so the internal viewport
+	// calculates its scroll offset with the correct height.
+	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if s := keyMsg.String(); s == "alt+enter" || s == "ctrl+j" {
+			target := m.input.LineCount() + 1
+			if target > inputMaxHeight {
+				target = inputMaxHeight
+			}
+			if target != m.lastInputHeight {
+				m.input.SetHeight(target)
+				m.lastInputHeight = target
+				m.updateLayout()
+			}
+		}
+	}
+
 	// Always pass keys to textarea
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	cmds = append(cmds, cmd)
+
+	// Shrink textarea when lines are removed (e.g. backspace joining lines).
+	m.syncInputHeight()
 
 	return m, tea.Batch(cmds...)
 }
@@ -457,9 +522,49 @@ func (m *model) addSystemMsg(text string) {
 	m.updateViewport()
 }
 
+// resolveAuthor returns the cached display name for a pubkey, or shortPK as fallback.
+func (m *model) resolveAuthor(pubkey string) string {
+	if name, ok := m.profiles[pubkey]; ok {
+		return name
+	}
+	return shortPK(pubkey)
+}
+
+// maybeRequestProfile returns a fetchProfileCmd if we haven't seen this pubkey before.
+func (m *model) maybeRequestProfile(pubkey string) tea.Cmd {
+	if pubkey == "" {
+		return nil
+	}
+	if _, ok := m.profiles[pubkey]; ok {
+		return nil
+	}
+	if m.profilePending[pubkey] {
+		return nil
+	}
+	m.profilePending[pubkey] = true
+	return fetchProfileCmd(m.pool, m.relays, pubkey)
+}
+
+// syncInputHeight resizes the textarea to match its content and re-layouts if needed.
+// Handles shrinking (e.g. backspace joining lines) and any growth not caught by pre-grow.
+func (m *model) syncInputHeight() {
+	lines := m.input.LineCount()
+	if lines < inputMinHeight {
+		lines = inputMinHeight
+	}
+	if lines > inputMaxHeight {
+		lines = inputMaxHeight
+	}
+	if lines != m.lastInputHeight {
+		m.input.SetHeight(lines)
+		m.lastInputHeight = lines
+		m.updateLayout()
+	}
+}
+
 func (m *model) updateLayout() {
-	contentWidth := m.width - sidebarWidth - 2 // border
-	contentHeight := m.height - headerHeight - statusHeight - inputHeight - 2
+	contentWidth := m.width - sidebarWidth - sidebarBorder
+	contentHeight := m.height - headerHeight - contentTitleHeight - statusHeight - m.lastInputHeight
 
 	if contentWidth < 10 {
 		contentWidth = 10
@@ -472,6 +577,7 @@ func (m *model) updateLayout() {
 	m.viewport.Height = contentHeight
 	m.input.SetWidth(contentWidth)
 	m.mdRender = newMarkdownRenderer(contentWidth-4, m.mdStyle)
+	m.updateViewport()
 }
 
 func (m *model) updateViewport() {
@@ -492,15 +598,31 @@ func (m *model) updateViewport() {
 			lines = append(lines, chatSystemStyle.Render("  "+msg.Content))
 			continue
 		}
-		authorStyle := chatAuthorStyle
+		var authorStyle lipgloss.Style
 		if msg.IsMine {
 			authorStyle = chatOwnAuthorStyle
+		} else if msg.PubKey != "" {
+			authorStyle = lipgloss.NewStyle().Foreground(colorForPubkey(msg.PubKey)).Bold(true)
+		} else {
+			authorStyle = chatAuthorStyle
+		}
+		displayName := msg.Author
+		if msg.PubKey != "" {
+			displayName = m.resolveAuthor(msg.PubKey)
 		}
 		ts := chatTimestampStyle.Render(msg.Timestamp.Time().Format("15:04"))
-		author := authorStyle.Render(msg.Author)
-		content := strings.TrimSpace(renderMarkdown(m.mdRender, msg.Content))
-		line := fmt.Sprintf("%s %s: %s", ts, author, content)
-		lines = append(lines, line)
+		author := authorStyle.Render(displayName)
+		// Convert single newlines to paragraph breaks for glamour.
+		mdContent := strings.ReplaceAll(msg.Content, "\n", "\n\n")
+		content := strings.TrimSpace(renderMarkdown(m.mdRender, mdContent))
+		prefix := fmt.Sprintf("%s %s: ", ts, author)
+		pad := strings.Repeat(" ", lipgloss.Width(prefix))
+		contentLines := strings.Split(content, "\n")
+		first := prefix + contentLines[0]
+		lines = append(lines, first)
+		for _, cl := range contentLines[1:] {
+			lines = append(lines, pad+cl)
+		}
 	}
 
 	m.viewport.SetContent(strings.Join(lines, "\n"))
@@ -559,7 +681,7 @@ func (m *model) viewSidebar() string {
 		}
 	} else {
 		for i, peer := range m.dmPeers {
-			name := "@" + peer
+			name := "@" + m.resolveAuthor(peer)
 			if len(name) > sidebarWidth-2 {
 				name = name[:sidebarWidth-2]
 			}
@@ -583,7 +705,7 @@ func (m *model) viewContent() string {
 	if m.tab == tabChannels && len(m.channels) > 0 {
 		title = "#" + m.channels[m.activeChannel].Name
 	} else if m.tab == tabDMs && len(m.dmPeers) > 0 {
-		title = "@" + m.dmPeers[m.activeDMPeer]
+		title = "@" + m.resolveAuthor(m.dmPeers[m.activeDMPeer])
 	}
 
 	titleBar := headerStyle.Render(title)
@@ -619,6 +741,7 @@ func appendMessage(msgs []ChatMessage, msg ChatMessage, maxMessages int) []ChatM
 	}
 	return msgs
 }
+
 
 func containsStr(sl []string, s string) bool {
 	for _, v := range sl {
