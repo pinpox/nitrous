@@ -50,7 +50,8 @@ func colorForPubkey(pubkey string) lipgloss.Color {
 
 // Layout constants
 const (
-	sidebarWidth     = 22
+	minSidebarWidth  = 12
+	sidebarPadding   = 3 // "#" or "@" prefix + left/right padding
 	sidebarBorder    = 1 // right border on sidebar
 	inputMinHeight   = 1
 	inputMaxHeight   = 8
@@ -67,7 +68,6 @@ var (
 			Padding(0, 1)
 
 	sidebarStyle = lipgloss.NewStyle().
-			Width(sidebarWidth).
 			BorderRight(true).
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderForeground(colorSecondary)

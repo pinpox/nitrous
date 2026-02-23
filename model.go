@@ -565,8 +565,29 @@ func (m *model) syncInputHeight() {
 	}
 }
 
+// sidebarWidth returns the width needed for the sidebar based on the longest
+// channel name or DM peer display name.
+func (m *model) sidebarWidth() int {
+	longest := 0
+	for _, ch := range m.channels {
+		if n := len(ch.Name); n > longest {
+			longest = n
+		}
+	}
+	for _, peer := range m.dmPeers {
+		if n := len(m.resolveAuthor(peer)); n > longest {
+			longest = n
+		}
+	}
+	w := longest + sidebarPadding
+	if w < minSidebarWidth {
+		w = minSidebarWidth
+	}
+	return w
+}
+
 func (m *model) updateLayout() {
-	contentWidth := m.width - sidebarWidth - sidebarBorder
+	contentWidth := m.width - m.sidebarWidth() - sidebarBorder
 	contentHeight := m.height - headerHeight - contentTitleHeight - statusHeight - m.lastInputHeight
 
 	if contentWidth < 10 {
@@ -696,12 +717,13 @@ func (m *model) viewHeader() string {
 
 func (m *model) viewSidebar() string {
 	contentHeight := m.height - headerHeight - statusHeight
+	sw := m.sidebarWidth()
 	var items []string
 	if m.tab == tabChannels {
 		for i, ch := range m.channels {
 			name := "#" + ch.Name
-			if len(name) > sidebarWidth-2 {
-				name = name[:sidebarWidth-2]
+			if len(name) > sw-2 {
+				name = name[:sw-2]
 			}
 			if i == m.activeChannel {
 				items = append(items, sidebarSelectedStyle.Render(name))
@@ -712,8 +734,8 @@ func (m *model) viewSidebar() string {
 	} else {
 		for i, peer := range m.dmPeers {
 			name := "@" + m.resolveAuthor(peer)
-			if len(name) > sidebarWidth-2 {
-				name = name[:sidebarWidth-2]
+			if len(name) > sw-2 {
+				name = name[:sw-2]
 			}
 			if i == m.activeDMPeer {
 				items = append(items, sidebarSelectedStyle.Render(name))
@@ -725,7 +747,7 @@ func (m *model) viewSidebar() string {
 
 	content := strings.Join(items, "\n")
 
-	return sidebarStyle.Height(contentHeight).MaxHeight(contentHeight).Render(content)
+	return sidebarStyle.Width(sw).Height(contentHeight).MaxHeight(contentHeight).Render(content)
 }
 
 func (m *model) viewContent() string {
