@@ -22,6 +22,7 @@ type ProfileConfig struct {
 
 type Config struct {
 	Relays      []string      `toml:"relays"`
+	GroupRelay  string        `toml:"group_relay"`
 	MaxMessages int           `toml:"max_messages"`
 	Profile     ProfileConfig `toml:"profile"`
 }

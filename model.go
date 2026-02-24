@@ -22,9 +22,10 @@ import (
 
 // Group represents a NIP-29 relay-based group.
 type Group struct {
-	RelayURL string
-	GroupID  string
-	Name     string
+	RelayURL    string
+	GroupID     string
+	Name        string
+	RelayPubKey string // pubkey of the relay (author of kind 39000 metadata)
 }
 
 type model struct {
@@ -537,6 +538,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i, g := range m.groups {
 			if g.RelayURL == msg.RelayURL && g.GroupID == msg.GroupID {
 				m.groups[i].Name = msg.Name
+				if msg.RelayPubKey != "" {
+					m.groups[i].RelayPubKey = msg.RelayPubKey
+				}
 				break
 			}
 		}
@@ -544,6 +548,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			log.Printf("groupMetaMsg: failed to update group name: %v", err)
 		}
 		m.updateViewport()
+		// Only re-wait if this metadata came from the group subscription;
+		// edit commands also return groupMetaMsg but must not spawn extra waiters.
+		if msg.FromSub && m.groupEvents != nil {
+			subRelayURL, _ := splitGroupKey(m.groupSubKey)
+			return m, waitForGroupEvent(m.groupEvents, m.groupSubKey, subRelayURL, m.keys)
+		}
 		return m, nil
 
 	case groupCreatedMsg:
@@ -570,6 +580,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Kind 9007 (create) doesn't set metadata on most relays;
 			// publish a kind 9002 (edit metadata) to set the name.
 			editGroupMetadataCmd(m.pool, msg.RelayURL, msg.GroupID, map[string]string{"name": msg.Name}, m.groupRecentIDs[gk], m.keys),
+			// Default new groups to closed.
+			editGroupMetadataCmd(m.pool, msg.RelayURL, msg.GroupID, map[string]string{"closed": ""}, m.groupRecentIDs[gk], m.keys),
 		)
 
 	case groupInviteCreatedMsg:
@@ -756,26 +768,12 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 
 	switch cmd {
 	case "/create":
-		if arg == "" {
-			m.addSystemMsg("usage: /create #roomname | /create ~groupname wss://relay")
+		if arg == "" || !strings.HasPrefix(arg, "#") {
+			m.addSystemMsg("usage: /create #roomname")
 			return m, nil
 		}
-		if strings.HasPrefix(arg, "#") {
-			name := strings.TrimPrefix(arg, "#")
-			return m, createChannelCmd(m.pool, m.relays, name, m.keys)
-		}
-		if strings.HasPrefix(arg, "~") {
-			createParts := strings.Fields(arg)
-			if len(createParts) < 2 || !strings.HasPrefix(createParts[1], "wss://") {
-				m.addSystemMsg("usage: /create ~groupname wss://relay")
-				return m, nil
-			}
-			name := strings.TrimPrefix(createParts[0], "~")
-			relayURL := createParts[1]
-			return m, createGroupCmd(m.pool, relayURL, name, m.keys)
-		}
-		m.addSystemMsg("usage: /create #roomname | /create ~groupname wss://relay")
-		return m, nil
+		name := strings.TrimPrefix(arg, "#")
+		return m, createChannelCmd(m.pool, m.relays, name, m.keys)
 
 	case "/join":
 		if arg == "" {
@@ -812,7 +810,7 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		}
 		if m.isGroupSelected() && len(m.groups) > 0 {
 			g := m.groups[m.activeGroupIdx()]
-			naddr, err := nip19.EncodeEntity("", nostr.KindSimpleGroupMetadata, g.GroupID, []string{g.RelayURL})
+			naddr, err := m.groupNaddr(g)
 			if err != nil {
 				m.addSystemMsg(fmt.Sprintf("encode error: %v", err))
 				return m, nil
@@ -862,75 +860,37 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, deleteGroupEventCmd(m.pool, g.RelayURL, g.GroupID, targetID, m.groupRecentIDs[gk], m.keys)
 
-	case "/name":
-		if !m.isGroupSelected() || len(m.groups) == 0 {
-			m.addSystemMsg("/name only works in a NIP-29 group")
-			return m, nil
-		}
-		if arg == "" {
-			m.addSystemMsg("usage: /name <new-name>")
-			return m, nil
-		}
-		idx := m.activeGroupIdx()
-		g := m.groups[idx]
-		gk := groupKey(g.RelayURL, g.GroupID)
-		m.groups[idx].Name = arg
-		if err := UpdateSavedGroupName(m.cfgFlagPath, g.RelayURL, g.GroupID, arg); err != nil {
-			log.Printf("/name: failed to save: %v", err)
-		}
-		m.updateViewport()
-		return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"name": arg}, m.groupRecentIDs[gk], m.keys)
-
-	case "/about":
-		if !m.isGroupSelected() || len(m.groups) == 0 {
-			m.addSystemMsg("/about only works in a NIP-29 group")
-			return m, nil
-		}
-		if arg == "" {
-			m.addSystemMsg("usage: /about <description>")
-			return m, nil
-		}
-		g := m.groups[m.activeGroupIdx()]
-		gk := groupKey(g.RelayURL, g.GroupID)
-		return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"about": arg}, m.groupRecentIDs[gk], m.keys)
-
-	case "/picture":
-		if !m.isGroupSelected() || len(m.groups) == 0 {
-			m.addSystemMsg("/picture only works in a NIP-29 group")
-			return m, nil
-		}
-		if arg == "" {
-			m.addSystemMsg("usage: /picture <url>")
-			return m, nil
-		}
-		g := m.groups[m.activeGroupIdx()]
-		gk := groupKey(g.RelayURL, g.GroupID)
-		return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"picture": arg}, m.groupRecentIDs[gk], m.keys)
+	case "/group":
+		return m.handleGroupCommand(arg)
 
 	case "/invite":
 		if !m.isGroupSelected() || len(m.groups) == 0 {
-			m.addSystemMsg("/invite only works in a NIP-29 group")
+			m.addSystemMsg("/invite requires a group to be selected")
 			return m, nil
 		}
-		g := m.groups[m.activeGroupIdx()]
-		gk := groupKey(g.RelayURL, g.GroupID)
-		return m, createGroupInviteCmd(m.pool, g.RelayURL, g.GroupID, m.groupRecentIDs[gk], m.keys)
+		if arg == "" {
+			m.addSystemMsg("usage: /invite <contact-name or npub or hex>")
+			return m, nil
+		}
+		return m.inviteToGroup(arg)
 
 	case "/leave":
 		return m.leaveCurrentItem()
 
 	case "/help":
 		m.addSystemMsg("/create #name — create a NIP-28 channel")
-		m.addSystemMsg("/create ~name wss://relay — create a NIP-29 group on a relay")
 		m.addSystemMsg("/join #name — join a channel from your rooms file")
 		m.addSystemMsg("/join <event-id> — join a channel by ID")
 		m.addSystemMsg("/join naddr1... [code] — join a NIP-29 group (with optional invite code)")
 		m.addSystemMsg("/join host'groupid [code] — join a NIP-29 group")
 		m.addSystemMsg("/dm <npub> — open a DM conversation")
-		m.addSystemMsg("/name <new-name> — edit group name")
-		m.addSystemMsg("/about <text> — edit group description")
-		m.addSystemMsg("/picture <url> — edit group picture")
-		m.addSystemMsg("/invite — create an invite code for the current group")
+		m.addSystemMsg("/group create <name> <relay> — create a closed NIP-29 group")
+		m.addSystemMsg("/group set open|closed — set group open or closed")
+		m.addSystemMsg("/group user add <pubkey> — add a user to the group")
+		m.addSystemMsg("/group name <new-name> — edit group name")
+		m.addSystemMsg("/group about <text> — edit group description")
+		m.addSystemMsg("/group picture <url> — edit group picture")
+		m.addSystemMsg("/invite <name> — add a contact to the group and DM them the link")
 		m.addSystemMsg("/delete — delete your last message in the current group")
 		m.addSystemMsg("/delete <event-id> — delete a message by ID (admin)")
 		m.addSystemMsg("/leave — leave the current channel, group, or DM")
@@ -943,6 +903,177 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		m.addSystemMsg("unknown command: " + cmd)
 		return m, nil
 	}
+}
+
+// handleGroupCommand handles /group subcommands.
+func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
+	if arg == "" {
+		m.addSystemMsg("usage: /group create <name> <relay> | set open|closed | user add <pubkey> | name <new-name> | about <text> | picture <url>")
+		return m, nil
+	}
+
+	parts := strings.SplitN(arg, " ", 2)
+	sub := strings.ToLower(parts[0])
+	subArg := ""
+	if len(parts) > 1 {
+		subArg = strings.TrimSpace(parts[1])
+	}
+
+	switch sub {
+	case "create":
+		// /group create <name> [wss://relay]
+		createParts := strings.Fields(subArg)
+		if len(createParts) == 0 {
+			m.addSystemMsg("usage: /group create <name> [wss://relay]")
+			return m, nil
+		}
+		name := createParts[0]
+		relayURL := m.cfg.GroupRelay
+		if len(createParts) >= 2 && strings.HasPrefix(createParts[1], "wss://") {
+			relayURL = createParts[1]
+		}
+		if relayURL == "" {
+			m.addSystemMsg("no relay specified and group_relay not set in config")
+			return m, nil
+		}
+		return m, createGroupCmd(m.pool, relayURL, name, m.keys)
+
+	case "set":
+		// /group set open | /group set closed
+		if !m.isGroupSelected() || len(m.groups) == 0 {
+			m.addSystemMsg("/group set requires a group to be selected")
+			return m, nil
+		}
+		g := m.groups[m.activeGroupIdx()]
+		gk := groupKey(g.RelayURL, g.GroupID)
+		switch strings.ToLower(subArg) {
+		case "open":
+			return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"open": ""}, m.groupRecentIDs[gk], m.keys)
+		case "closed":
+			return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"closed": ""}, m.groupRecentIDs[gk], m.keys)
+		default:
+			m.addSystemMsg("usage: /group set open|closed")
+			return m, nil
+		}
+
+	case "user":
+		// /group user add <pubkey>
+		if !m.isGroupSelected() || len(m.groups) == 0 {
+			m.addSystemMsg("/group user requires a group to be selected")
+			return m, nil
+		}
+		userParts := strings.SplitN(subArg, " ", 2)
+		if len(userParts) < 2 || strings.ToLower(userParts[0]) != "add" {
+			m.addSystemMsg("usage: /group user add <npub-or-hex>")
+			return m, nil
+		}
+		pk := strings.TrimSpace(userParts[1])
+		if strings.HasPrefix(pk, "npub") {
+			prefix, decoded, err := nip19.Decode(pk)
+			if err != nil || prefix != "npub" {
+				m.addSystemMsg("invalid npub")
+				return m, nil
+			}
+			pk = decoded.(string)
+		}
+		g := m.groups[m.activeGroupIdx()]
+		gk := groupKey(g.RelayURL, g.GroupID)
+		m.addSystemMsg(fmt.Sprintf("adding user %s to ~%s", shortPK(pk), g.Name))
+		return m, putUserCmd(m.pool, g.RelayURL, g.GroupID, pk, m.groupRecentIDs[gk], m.keys)
+
+	case "name":
+		// /group name <new-name>
+		if !m.isGroupSelected() || len(m.groups) == 0 {
+			m.addSystemMsg("/group name requires a group to be selected")
+			return m, nil
+		}
+		if subArg == "" {
+			m.addSystemMsg("usage: /group name <new-name>")
+			return m, nil
+		}
+		idx := m.activeGroupIdx()
+		g := m.groups[idx]
+		gk := groupKey(g.RelayURL, g.GroupID)
+		m.groups[idx].Name = subArg
+		if err := UpdateSavedGroupName(m.cfgFlagPath, g.RelayURL, g.GroupID, subArg); err != nil {
+			log.Printf("/group name: failed to save: %v", err)
+		}
+		m.updateViewport()
+		return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"name": subArg}, m.groupRecentIDs[gk], m.keys)
+
+	case "about":
+		// /group about <text>
+		if !m.isGroupSelected() || len(m.groups) == 0 {
+			m.addSystemMsg("/group about requires a group to be selected")
+			return m, nil
+		}
+		if subArg == "" {
+			m.addSystemMsg("usage: /group about <description>")
+			return m, nil
+		}
+		g := m.groups[m.activeGroupIdx()]
+		gk := groupKey(g.RelayURL, g.GroupID)
+		return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"about": subArg}, m.groupRecentIDs[gk], m.keys)
+
+	case "picture":
+		// /group picture <url>
+		if !m.isGroupSelected() || len(m.groups) == 0 {
+			m.addSystemMsg("/group picture requires a group to be selected")
+			return m, nil
+		}
+		if subArg == "" {
+			m.addSystemMsg("usage: /group picture <url>")
+			return m, nil
+		}
+		g := m.groups[m.activeGroupIdx()]
+		gk := groupKey(g.RelayURL, g.GroupID)
+		return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"picture": subArg}, m.groupRecentIDs[gk], m.keys)
+
+	default:
+		m.addSystemMsg("unknown group subcommand: " + sub)
+		m.addSystemMsg("usage: /group create|set|user|name|about|picture")
+		return m, nil
+	}
+}
+
+// inviteToGroup resolves a contact name, npub, or hex pubkey, adds them to
+// the current group via kind 9000, and sends a DM with the group naddr.
+func (m *model) inviteToGroup(input string) (tea.Model, tea.Cmd) {
+	g := m.groups[m.activeGroupIdx()]
+	gk := groupKey(g.RelayURL, g.GroupID)
+
+	// Resolve input to a pubkey: try contact name first, then npub, then raw hex.
+	pk := ""
+	if strings.HasPrefix(input, "npub") {
+		prefix, decoded, err := nip19.Decode(input)
+		if err != nil || prefix != "npub" {
+			m.addSystemMsg("invalid npub")
+			return m, nil
+		}
+		pk = decoded.(string)
+	} else if len(input) == 64 {
+		pk = input
+	} else {
+		// Look up by display name in profiles (case-insensitive).
+		for pubkey, name := range m.profiles {
+			if strings.EqualFold(name, input) {
+				pk = pubkey
+				break
+			}
+		}
+		if pk == "" {
+			m.addSystemMsg(fmt.Sprintf("unknown contact: %s (use npub or hex pubkey)", input))
+			return m, nil
+		}
+	}
+
+	displayName := m.resolveAuthor(pk)
+	m.addSystemMsg(fmt.Sprintf("inviting %s to ~%s", displayName, g.Name))
+
+	return m, tea.Batch(
+		putUserCmd(m.pool, g.RelayURL, g.GroupID, pk, m.groupRecentIDs[gk], m.keys),
+		inviteDMCmd(m.pool, m.relays, g.RelayURL, g.GroupID, g.Name, pk, m.keys, m.kr),
+	)
 }
 
 // joinChannel handles /join. #name looks up the rooms file, a raw hex ID
@@ -1170,6 +1301,15 @@ func (m *model) addSystemMsg(text string) {
 		m.globalMsgs = appendMessage(m.globalMsgs, msg, m.cfg.MaxMessages)
 	}
 	m.updateViewport()
+}
+
+// groupNaddr encodes a NIP-19 naddr for a group, using the relay's pubkey if known.
+func (m *model) groupNaddr(g Group) (string, error) {
+	author := g.RelayPubKey
+	if author == "" {
+		author = m.keys.PK
+	}
+	return nip19.EncodeEntity(author, nostr.KindSimpleGroupMetadata, g.GroupID, []string{g.RelayURL})
 }
 
 // resolveAuthor returns the cached display name for a pubkey, or shortPK as fallback.
