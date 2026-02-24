@@ -47,6 +47,14 @@ type channelEventMsg ChatMessage
 type dmEventMsg ChatMessage
 type nostrErrMsg struct{ err error }
 
+// Subscription-ended messages — trigger reconnection.
+type dmSubEndedMsg struct{}
+type channelSubEndedMsg struct{ channelID string }
+
+// Reconnection delay messages — dispatched after a brief pause.
+type dmReconnectMsg struct{}
+type channelReconnectMsg struct{ channelID string }
+
 // Subscription setup results — returned from Cmds so the model can store
 // the channel and cancel func without blocking Init().
 type channelSubStartedMsg struct {
@@ -180,8 +188,25 @@ func subscribeChannelCmd(pool *nostr.SimplePool, relays []string, channelID stri
 	}
 }
 
+// dmReconnectDelayCmd waits briefly before signalling a DM reconnection.
+func dmReconnectDelayCmd() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(5 * time.Second)
+		return dmReconnectMsg{}
+	}
+}
+
+// channelReconnectDelayCmd waits briefly before signalling a channel reconnection.
+func channelReconnectDelayCmd(channelID string) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(5 * time.Second)
+		return channelReconnectMsg{channelID: channelID}
+	}
+}
+
 // subscribeDMCmd opens a NIP-17 DM listener inside a tea.Cmd so it doesn't block Init/Update.
-// It proactively authenticates with each relay via NIP-42 before subscribing.
+// NIP-42 auth is handled by the pool's WithAuthHandler; we pre-connect to each relay
+// and wait briefly so the AUTH handshake completes before subscribing.
 func subscribeDMCmd(pool *nostr.SimplePool, relays []string, kr nostr.Keyer, since nostr.Timestamp) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -191,20 +216,33 @@ func subscribeDMCmd(pool *nostr.SimplePool, relays []string, kr nostr.Keyer, sin
 			cancel()
 			return nostrErrMsg{fmt.Errorf("subscribeDMCmd: %w", err)}
 		}
-		log.Printf("subscribeDMCmd: listening for kind 1059 gift wraps to %s since %d", shortPK(pk), since)
+		// NIP-59 gift wraps use randomized created_at timestamps (up to ±2 days)
+		// to thwart time-analysis attacks. Subtract 3 days from the since filter
+		// so we don't miss events whose outer timestamp is in the past.
+		// The seenEvents dedup map handles any duplicates.
+		adjustedSince := since - 259200 // 3 days
+		if adjustedSince < 0 {
+			adjustedSince = 0
+		}
+		log.Printf("subscribeDMCmd: listening for kind 1059 gift wraps to %s since %d (adjusted from %d)", shortPK(pk), adjustedSince, since)
 
-		// Pre-authenticate with each relay via NIP-42 so they serve DM events.
+		// Pre-authenticate with each relay via NIP-42. The relay sends an AUTH
+		// challenge on connect; r.Auth() reads it from the WebSocket and responds.
+		// The relay-side auth succeeds even when r.Auth() reports a timeout on the
+		// client side, so we ignore errors. Without this, SubscribeMany sends the
+		// REQ before auth completes and the relay withholds DM events.
 		for _, url := range relays {
 			r, err := pool.EnsureRelay(url)
 			if err != nil {
 				log.Printf("subscribeDMCmd: failed to connect to %s: %v", url, err)
 				continue
 			}
-			// Give the relay a moment to send the AUTH challenge.
 			time.Sleep(500 * time.Millisecond)
-			err = r.Auth(ctx, func(ae *nostr.Event) error { return kr.SignEvent(ctx, ae) })
+			authCtx, authCancel := context.WithTimeout(ctx, 3*time.Second)
+			err = r.Auth(authCtx, func(ae *nostr.Event) error { return kr.SignEvent(authCtx, ae) })
+			authCancel()
 			if err != nil {
-				log.Printf("subscribeDMCmd: NIP-42 auth failed on %s: %v", url, err)
+				log.Printf("subscribeDMCmd: NIP-42 auth on %s returned: %v (may still succeed relay-side)", url, err)
 			} else {
 				log.Printf("subscribeDMCmd: NIP-42 auth succeeded on %s", url)
 			}
@@ -217,7 +255,7 @@ func subscribeDMCmd(pool *nostr.SimplePool, relays []string, kr nostr.Keyer, sin
 			for ie := range pool.SubscribeMany(ctx, relays, nostr.Filter{
 				Kinds: []int{1059},
 				Tags:  nostr.TagMap{"p": []string{pk}},
-				Since: &since,
+				Since: &adjustedSince,
 			}) {
 				log.Printf("subscribeDMCmd: got kind 1059 event id=%s from relay=%s", shortPK(ie.ID), ie.Relay.URL)
 				rumor, err := nip59.GiftUnwrap(
@@ -243,7 +281,7 @@ func waitForChannelEvent(events <-chan nostr.RelayEvent, channelID string, keys 
 	return func() tea.Msg {
 		re, ok := <-events
 		if !ok {
-			return nil
+			return channelSubEndedMsg{channelID: channelID}
 		}
 		return channelEventMsg(ChatMessage{
 			Author:    shortPK(re.PubKey),
@@ -294,7 +332,7 @@ func waitForDMEvent(events <-chan nostr.Event, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		rumor, ok := <-events
 		if !ok {
-			return nil
+			return dmSubEndedMsg{}
 		}
 
 		// rumor.PubKey = sender, rumor.Content = plaintext (already decrypted by nip17)
@@ -342,11 +380,14 @@ func sendDM(pool *nostr.SimplePool, relays []string, recipientPK string, content
 			return nostrErrMsg{fmt.Errorf("send DM: %w", err)}
 		}
 
+		ts := nostr.Now()
+		h := sha256.Sum256([]byte(fmt.Sprintf("local:%s:%s:%d:%s", keys.PK, recipientPK, ts, content)))
 		return dmEventMsg(ChatMessage{
 			Author:    shortPK(keys.PK),
 			PubKey:    recipientPK,
 			Content:   content,
-			Timestamp: nostr.Now(),
+			Timestamp: ts,
+			EventID:   hex.EncodeToString(h[:]),
 			IsMine:    true,
 		})
 	}

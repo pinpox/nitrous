@@ -14,10 +14,10 @@ var (
 	colorSecondary = lipgloss.Color("#5B5682")
 	colorMuted     = lipgloss.Color("#636363")
 	colorHighlight = lipgloss.Color("#E0DAFF")
-	colorStatusBg = lipgloss.Color("#24283B")
-	colorWhite    = lipgloss.Color("#C0CAF5")
-	colorGreen    = lipgloss.Color("#9ECE6A")
-	colorRed      = lipgloss.Color("#F7768E")
+	colorStatusBg  = lipgloss.Color("#24283B")
+	colorWhite     = lipgloss.Color("#C0CAF5")
+	colorGreen     = lipgloss.Color("#9ECE6A")
+	colorRed       = lipgloss.Color("#F7768E")
 )
 
 // Distinct author colors — chosen for readability on dark backgrounds.
@@ -50,72 +50,68 @@ func colorForPubkey(pubkey string) lipgloss.Color {
 
 // Layout constants
 const (
-	minSidebarWidth  = 12
-	sidebarPadding   = 3 // "#" or "@" prefix + left/right padding
-	sidebarBorder    = 1 // right border on sidebar
-	inputMinHeight   = 1
-	inputMaxHeight   = 8
-	headerHeight     = 1 // top tab bar
+	minSidebarWidth   = 12
+	sidebarPadding    = 3 // "#" or "@" prefix + left/right padding
+	sidebarBorder     = 1 // right border on sidebar
+	inputMinHeight    = 1
+	inputMaxHeight    = 8
+	headerHeight      = 1 // top header bar
 	contentTitleHeight = 1 // channel/DM name above viewport
-	statusHeight     = 1 // bottom status bar
+	statusHeight      = 1 // bottom status bar
 )
 
 // Styles
 var (
 	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(colorPrimary).
-			Padding(0, 1)
+		Bold(true).
+		Foreground(colorPrimary).
+		Padding(0, 1)
 
 	sidebarStyle = lipgloss.NewStyle().
-			BorderRight(true).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(colorSecondary)
+		BorderRight(true).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(colorSecondary)
 
 	sidebarItemStyle = lipgloss.NewStyle().
-				Foreground(colorWhite).
-				Padding(0, 1)
+		Foreground(colorWhite).
+		Padding(0, 1)
 
 	sidebarSelectedStyle = lipgloss.NewStyle().
-				Foreground(colorHighlight).
-				Background(colorSecondary).
-				Bold(true).
-				Padding(0, 1)
+		Foreground(colorHighlight).
+		Background(colorSecondary).
+		Bold(true).
+		Padding(0, 1)
+
+	sidebarSectionStyle = lipgloss.NewStyle().
+		Foreground(colorMuted).
+		Bold(true).
+		Padding(0, 1)
 
 	chatAuthorStyle = lipgloss.NewStyle().
-			Foreground(colorPrimary).
-			Bold(true)
+		Foreground(colorPrimary).
+		Bold(true)
 
 	chatOwnAuthorStyle = lipgloss.NewStyle().
-				Foreground(colorGreen).
-				Bold(true)
+		Foreground(colorGreen).
+		Bold(true)
 
 	chatTimestampStyle = lipgloss.NewStyle().
-				Foreground(colorMuted)
+		Foreground(colorMuted)
 
 	statusBarStyle = lipgloss.NewStyle().
-			Foreground(colorWhite).
-			Background(colorStatusBg).
-			Padding(0, 1)
+		Foreground(colorWhite).
+		Background(colorStatusBg).
+		Padding(0, 1)
 
 	statusConnectedStyle = lipgloss.NewStyle().
-				Foreground(colorGreen)
+		Foreground(colorGreen)
 
 	chatSystemStyle = lipgloss.NewStyle().
-			Foreground(colorMuted)
-
-	tabActiveStyle = lipgloss.NewStyle().
-			Foreground(colorHighlight).
-			Bold(true).
-			Padding(0, 1)
-
-	tabInactiveStyle = lipgloss.NewStyle().
-				Foreground(colorMuted).
-				Padding(0, 1)
+		Foreground(colorMuted)
 
 	qrTitleStyle = lipgloss.NewStyle().
-			Foreground(colorPrimary).
-			Bold(true)
+		Foreground(colorPrimary).
+		Bold(true)
 )
 
 // detectGlamourStyle queries the terminal background and returns "dark" or "light".

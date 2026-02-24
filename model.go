@@ -20,13 +20,6 @@ import (
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
-type sidebarTab int
-
-const (
-	tabChannels sidebarTab = iota
-	tabDMs
-)
-
 type model struct {
 	// Config and keys
 	cfg         Config
@@ -41,24 +34,22 @@ type model struct {
 	width  int
 	height int
 
-	// Navigation
-	tab sidebarTab
+	// Unified sidebar selection: 0..len(channels)-1 = channels, len(channels).. = DMs
+	activeItem int
 
 	// Channels
 	channels      []Channel
-	activeChannel int
 	channelMsgs   map[string][]ChatMessage
 	channelSubID  string // ID of the channel we're subscribed to
 	channelEvents <-chan nostr.RelayEvent
 	channelCancel context.CancelFunc
 
 	// DMs
-	dmPeers      []string // pubkeys of DM peers
-	activeDMPeer int
-	dmMsgs       map[string][]ChatMessage
-	dmEvents     <-chan nostr.Event
-	dmCancel     context.CancelFunc
-	lastDMSeen   nostr.Timestamp
+	dmPeers    []string // pubkeys of DM peers
+	dmMsgs     map[string][]ChatMessage
+	dmEvents   <-chan nostr.Event
+	dmCancel   context.CancelFunc
+	lastDMSeen nostr.Timestamp
 
 	// Components
 	viewport viewport.Model
@@ -84,6 +75,48 @@ type model struct {
 
 	// QR overlay (non-empty = show full-screen QR)
 	qrOverlay string
+}
+
+// isChannelSelected returns true if the active sidebar item is a channel.
+func (m *model) isChannelSelected() bool {
+	return m.activeItem < len(m.channels)
+}
+
+// activeChannelIdx returns the channel index, or -1 if a DM is selected.
+func (m *model) activeChannelIdx() int {
+	if m.isChannelSelected() {
+		return m.activeItem
+	}
+	return -1
+}
+
+// activeChannelID returns the selected channel ID, or "" if a DM is selected.
+func (m *model) activeChannelID() string {
+	if idx := m.activeChannelIdx(); idx >= 0 && idx < len(m.channels) {
+		return m.channels[idx].ID
+	}
+	return ""
+}
+
+// activeDMPeerIdx returns the DM peer index, or -1 if a channel is selected.
+func (m *model) activeDMPeerIdx() int {
+	if !m.isChannelSelected() {
+		return m.activeItem - len(m.channels)
+	}
+	return -1
+}
+
+// activeDMPeerPK returns the selected DM peer pubkey, or "" if a channel is selected.
+func (m *model) activeDMPeerPK() string {
+	if idx := m.activeDMPeerIdx(); idx >= 0 && idx < len(m.dmPeers) {
+		return m.dmPeers[idx]
+	}
+	return ""
+}
+
+// sidebarTotal returns the total number of items in the unified sidebar.
+func (m *model) sidebarTotal() int {
+	return len(m.channels) + len(m.dmPeers)
 }
 
 func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool, kr nostr.Keyer, rooms []Room, mdRender *glamour.TermRenderer, mdStyle string) model {
@@ -127,19 +160,19 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		kr:          kr,
 		relays:      cfg.Relays,
 		rooms:       rooms,
-		width:  80,
-		height: 24,
-		tab:    tabChannels,
+		width:       80,
+		height:      24,
+		activeItem:  0,
 		channels:       channels,
 		channelMsgs:    make(map[string][]ChatMessage),
 		dmMsgs:         make(map[string][]ChatMessage),
 		dmPeers:        []string{},
 		lastDMSeen:     LoadLastDMSeen(cfgFlagPath),
 		seenEvents:     make(map[string]bool),
-		profiles:        profiles,
-		profilePending:  make(map[string]bool),
+		profiles:       profiles,
+		profilePending: make(map[string]bool),
 		lastInputHeight: inputMinHeight,
-		viewport:        vp,
+		viewport:       vp,
 		input:          ta,
 		mdRender:       mdRender,
 		mdStyle:        mdStyle,
@@ -165,7 +198,7 @@ func (m *model) Init() tea.Cmd {
 		subscribeDMCmd(m.pool, m.relays, m.kr, m.lastDMSeen),
 		publishDMRelaysCmd(m.pool, m.relays, m.keys),
 	}
-	if len(m.channels) > 0 {
+	if len(m.channels) > 0 && m.isChannelSelected() {
 		cmds = append(cmds, subscribeChannelCmd(m.pool, m.relays, m.channels[0].ID))
 	}
 	if m.cfg.Profile.Name != "" || m.cfg.Profile.DisplayName != "" || m.cfg.Profile.About != "" || m.cfg.Profile.Picture != "" {
@@ -188,8 +221,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case channelCreatedMsg:
 		log.Printf("channelCreatedMsg: id=%s name=%q", msg.ID, msg.Name)
 		m.channels = append(m.channels, Channel{ID: msg.ID, Name: msg.Name})
-		m.tab = tabChannels
-		m.activeChannel = len(m.channels) - 1
+		m.activeItem = len(m.channels) - 1
 		room := Room{Name: msg.Name, ID: msg.ID}
 		if err := AppendRoom(m.cfgFlagPath, room); err != nil {
 			log.Printf("channelCreatedMsg: failed to save room: %v", err)
@@ -202,14 +234,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case channelMetaMsg:
 		log.Printf("channelMetaMsg: id=%s name=%q", msg.ID, msg.Name)
-		// Update the channel name in our list
 		for i, ch := range m.channels {
 			if ch.ID == msg.ID {
 				m.channels[i].Name = msg.Name
 				break
 			}
 		}
-		// Save to rooms file
 		room := Room{Name: msg.Name, ID: msg.ID}
 		if err := AppendRoom(m.cfgFlagPath, room); err != nil {
 			log.Printf("channelMetaMsg: failed to save room: %v", err)
@@ -227,8 +257,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.channelSubID = msg.channelID
 		m.channelEvents = msg.events
 		m.channelCancel = msg.cancel
-		if len(m.channels) > 0 {
-			m.addSystemMsg("subscribed to #" + m.channels[m.activeChannel].Name)
+		if idx := m.activeChannelIdx(); idx >= 0 && idx < len(m.channels) {
+			m.addSystemMsg("subscribed to #" + m.channels[idx].Name)
 		}
 		return m, waitForChannelEvent(m.channelEvents, m.channelSubID, m.keys)
 
@@ -254,7 +284,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.seenEvents[cm.EventID] = true
 		chID := cm.ChannelID
 		m.channelMsgs[chID] = appendMessage(m.channelMsgs[chID], cm, m.cfg.MaxMessages)
-		if chID == m.channels[m.activeChannel].ID {
+		if chID == m.activeChannelID() {
 			m.updateViewport()
 		}
 		var batchCmds []tea.Cmd
@@ -287,7 +317,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				log.Printf("dmEventMsg: failed to save last DM seen: %v", err)
 			}
 		}
-		if m.tab == tabDMs {
+		if !m.isChannelSelected() {
 			m.updateViewport()
 		}
 		var batchCmds []tea.Cmd
@@ -298,6 +328,31 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			batchCmds = append(batchCmds, waitForDMEvent(m.dmEvents, m.keys))
 		}
 		return m, tea.Batch(batchCmds...)
+
+	case dmSubEndedMsg:
+		log.Println("dmSubEndedMsg: DM subscription ended, scheduling reconnect")
+		m.dmEvents = nil
+		m.addSystemMsg("DM subscription lost, reconnecting...")
+		return m, dmReconnectDelayCmd()
+
+	case dmReconnectMsg:
+		log.Println("dmReconnectMsg: reconnecting DM subscription")
+		return m, subscribeDMCmd(m.pool, m.relays, m.kr, m.lastDMSeen)
+
+	case channelSubEndedMsg:
+		log.Printf("channelSubEndedMsg: channel %s subscription ended, scheduling reconnect", shortPK(msg.channelID))
+		m.channelEvents = nil
+		if msg.channelID == m.activeChannelID() {
+			m.addSystemMsg("channel subscription lost, reconnecting...")
+		}
+		return m, channelReconnectDelayCmd(msg.channelID)
+
+	case channelReconnectMsg:
+		log.Printf("channelReconnectMsg: reconnecting channel %s", shortPK(msg.channelID))
+		if msg.channelID == m.activeChannelID() {
+			return m, subscribeChannelCmd(m.pool, m.relays, msg.channelID)
+		}
+		return m, nil
 
 	case profileResolvedMsg:
 		log.Printf("profileResolvedMsg: %s -> %q", shortPK(msg.PubKey), msg.DisplayName)
@@ -337,34 +392,33 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 
-		case "ctrl+left", "ctrl+right":
-			if m.tab == tabChannels {
-				m.tab = tabDMs
-			} else {
-				m.tab = tabChannels
-			}
-			m.updateViewport()
-			return m, nil
-
 		case "ctrl+up":
-			if m.tab == tabChannels && len(m.channels) > 1 {
-				m.activeChannel--
-				if m.activeChannel < 0 {
-					m.activeChannel = len(m.channels) - 1
+			total := m.sidebarTotal()
+			if total > 1 {
+				prev := m.activeItem
+				m.activeItem--
+				if m.activeItem < 0 {
+					m.activeItem = total - 1
 				}
 				m.updateViewport()
-				return m, subscribeChannelCmd(m.pool, m.relays, m.channels[m.activeChannel].ID)
+				if m.isChannelSelected() && (prev >= len(m.channels) || m.activeItem != prev) {
+					return m, subscribeChannelCmd(m.pool, m.relays, m.activeChannelID())
+				}
 			}
 			return m, nil
 
 		case "ctrl+down":
-			if m.tab == tabChannels && len(m.channels) > 1 {
-				m.activeChannel++
-				if m.activeChannel >= len(m.channels) {
-					m.activeChannel = 0
+			total := m.sidebarTotal()
+			if total > 1 {
+				prev := m.activeItem
+				m.activeItem++
+				if m.activeItem >= total {
+					m.activeItem = 0
 				}
 				m.updateViewport()
-				return m, subscribeChannelCmd(m.pool, m.relays, m.channels[m.activeChannel].ID)
+				if m.isChannelSelected() && (prev >= len(m.channels) || m.activeItem != prev) {
+					return m, subscribeChannelCmd(m.pool, m.relays, m.activeChannelID())
+				}
 			}
 			return m, nil
 
@@ -392,12 +446,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			// Regular message
-			if m.tab == tabChannels && len(m.channels) > 0 {
-				chID := m.channels[m.activeChannel].ID
+			if m.isChannelSelected() && len(m.channels) > 0 {
+				chID := m.activeChannelID()
 				return m, publishChannelMessage(m.pool, m.relays, chID, text, m.keys)
 			}
-			if m.tab == tabDMs && len(m.dmPeers) > 0 {
-				peer := m.dmPeers[m.activeDMPeer]
+			if !m.isChannelSelected() && len(m.dmPeers) > 0 {
+				peer := m.activeDMPeerPK()
 				return m, sendDM(m.pool, m.relays, peer, text, m.keys, m.kr)
 			}
 			return m, nil
@@ -467,11 +521,11 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/room":
-		if m.tab != tabChannels || len(m.channels) == 0 {
+		if !m.isChannelSelected() || len(m.channels) == 0 {
 			m.addSystemMsg("no active channel — switch to a channel first")
 			return m, nil
 		}
-		ch := m.channels[m.activeChannel]
+		ch := m.channels[m.activeChannelIdx()]
 		m.qrOverlay = renderQR("#"+ch.Name, ch.ID)
 		return m, nil
 
@@ -500,8 +554,7 @@ func (m *model) joinChannel(arg string) (tea.Model, tea.Cmd) {
 		for i, ch := range m.channels {
 			if strings.EqualFold(ch.Name, name) {
 				log.Printf("joinChannel: found %q -> %s", name, ch.ID)
-				m.tab = tabChannels
-				m.activeChannel = i
+				m.activeItem = i
 				m.updateViewport()
 				return m, subscribeChannelCmd(m.pool, m.relays, ch.ID)
 			}
@@ -515,8 +568,7 @@ func (m *model) joinChannel(arg string) (tea.Model, tea.Cmd) {
 	for i, ch := range m.channels {
 		if ch.ID == id {
 			log.Printf("joinChannel: already have %s as %q", id, ch.Name)
-			m.tab = tabChannels
-			m.activeChannel = i
+			m.activeItem = i
 			m.updateViewport()
 			return m, subscribeChannelCmd(m.pool, m.relays, ch.ID)
 		}
@@ -524,8 +576,7 @@ func (m *model) joinChannel(arg string) (tea.Model, tea.Cmd) {
 
 	// New room — add with placeholder, fetch metadata to get the real name
 	m.channels = append(m.channels, Channel{Name: id[:8], ID: id})
-	m.tab = tabChannels
-	m.activeChannel = len(m.channels) - 1
+	m.activeItem = len(m.channels) - 1
 	m.updateViewport()
 	return m, tea.Batch(
 		subscribeChannelCmd(m.pool, m.relays, id),
@@ -549,10 +600,9 @@ func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
 		m.dmPeers = append(m.dmPeers, pk)
 	}
 
-	m.tab = tabDMs
 	for i, p := range m.dmPeers {
 		if p == pk {
-			m.activeDMPeer = i
+			m.activeItem = len(m.channels) + i
 			break
 		}
 	}
@@ -567,11 +617,11 @@ func (m *model) addSystemMsg(text string) {
 		Content:   text,
 		Timestamp: nostr.Now(),
 	}
-	if m.tab == tabChannels && len(m.channels) > 0 {
-		chID := m.channels[m.activeChannel].ID
+	if m.isChannelSelected() && len(m.channels) > 0 {
+		chID := m.activeChannelID()
 		m.channelMsgs[chID] = appendMessage(m.channelMsgs[chID], msg, m.cfg.MaxMessages)
-	} else if m.tab == tabDMs && len(m.dmPeers) > 0 {
-		peer := m.dmPeers[m.activeDMPeer]
+	} else if !m.isChannelSelected() && len(m.dmPeers) > 0 {
+		peer := m.activeDMPeerPK()
 		m.dmMsgs[peer] = appendMessage(m.dmMsgs[peer], msg, m.cfg.MaxMessages)
 	} else {
 		m.globalMsgs = appendMessage(m.globalMsgs, msg, m.cfg.MaxMessages)
@@ -659,11 +709,11 @@ func (m *model) updateLayout() {
 
 func (m *model) updateViewport() {
 	var msgs []ChatMessage
-	if m.tab == tabChannels && len(m.channels) > 0 {
-		chID := m.channels[m.activeChannel].ID
+	if m.isChannelSelected() && len(m.channels) > 0 {
+		chID := m.activeChannelID()
 		msgs = m.channelMsgs[chID]
-	} else if m.tab == tabDMs && len(m.dmPeers) > 0 {
-		peer := m.dmPeers[m.activeDMPeer]
+	} else if !m.isChannelSelected() && len(m.dmPeers) > 0 {
+		peer := m.activeDMPeerPK()
 		msgs = m.dmMsgs[peer]
 	} else {
 		msgs = m.globalMsgs
@@ -754,52 +804,45 @@ func (m *model) View() string {
 }
 
 func (m *model) viewHeader() string {
-	channelsTab := tabInactiveStyle.Render("[channels]")
-	dmsTab := tabInactiveStyle.Render("[dms]")
-	if m.tab == tabChannels {
-		channelsTab = tabActiveStyle.Render("[channels]")
-	} else {
-		dmsTab = tabActiveStyle.Render("[dms]")
-	}
-
 	title := headerStyle.Render("nitrous")
-	tabs := channelsTab + " " + dmsTab
-
-	gap := m.width - lipgloss.Width(title) - lipgloss.Width(tabs) - 2
+	gap := m.width - lipgloss.Width(title)
 	if gap < 0 {
 		gap = 0
 	}
-
-	return title + strings.Repeat(" ", gap) + tabs
+	return title + strings.Repeat(" ", gap)
 }
 
 func (m *model) viewSidebar() string {
 	contentHeight := m.height - headerHeight - statusHeight
 	sw := m.sidebarWidth()
 	var items []string
-	if m.tab == tabChannels {
-		for i, ch := range m.channels {
-			name := "#" + ch.Name
-			if len(name) > sw-2 {
-				name = name[:sw-2]
-			}
-			if i == m.activeChannel {
-				items = append(items, sidebarSelectedStyle.Render(name))
-			} else {
-				items = append(items, sidebarItemStyle.Render(name))
-			}
+
+	// CHANNELS section
+	items = append(items, sidebarSectionStyle.Render("CHANNELS"))
+	for i, ch := range m.channels {
+		name := "#" + ch.Name
+		if len(name) > sw-2 {
+			name = name[:sw-2]
 		}
-	} else {
-		for i, peer := range m.dmPeers {
-			name := "@" + m.resolveAuthor(peer)
-			if len(name) > sw-2 {
-				name = name[:sw-2]
-			}
-			if i == m.activeDMPeer {
-				items = append(items, sidebarSelectedStyle.Render(name))
-			} else {
-				items = append(items, sidebarItemStyle.Render(name))
-			}
+		if i == m.activeItem {
+			items = append(items, sidebarSelectedStyle.Render(name))
+		} else {
+			items = append(items, sidebarItemStyle.Render(name))
+		}
+	}
+
+	// DMS section
+	items = append(items, sidebarSectionStyle.Render("DMS"))
+	for i, peer := range m.dmPeers {
+		name := "@" + m.resolveAuthor(peer)
+		if len(name) > sw-2 {
+			name = name[:sw-2]
+		}
+		idx := len(m.channels) + i
+		if idx == m.activeItem {
+			items = append(items, sidebarSelectedStyle.Render(name))
+		} else {
+			items = append(items, sidebarItemStyle.Render(name))
 		}
 	}
 
@@ -812,10 +855,10 @@ func (m *model) viewContent() string {
 	totalHeight := m.height - headerHeight - statusHeight
 
 	var title string
-	if m.tab == tabChannels && len(m.channels) > 0 {
-		title = "#" + m.channels[m.activeChannel].Name
-	} else if m.tab == tabDMs && len(m.dmPeers) > 0 {
-		title = "@" + m.resolveAuthor(m.dmPeers[m.activeDMPeer])
+	if m.isChannelSelected() && len(m.channels) > 0 {
+		title = "#" + m.channels[m.activeChannelIdx()].Name
+	} else if !m.isChannelSelected() && len(m.dmPeers) > 0 {
+		title = "@" + m.resolveAuthor(m.dmPeers[m.activeDMPeerIdx()])
 	}
 
 	titleBar := headerStyle.Render(title)
@@ -852,7 +895,6 @@ func appendMessage(msgs []ChatMessage, msg ChatMessage, maxMessages int) []ChatM
 	return msgs
 }
 
-
 func containsStr(sl []string, s string) bool {
 	for _, v := range sl {
 		if v == s {
@@ -868,14 +910,14 @@ func renderQR(title, content string) string {
 	buf.WriteString(qrTitleStyle.Render(title))
 	buf.WriteString("\n\n")
 	qrterminal.GenerateWithConfig(content, qrterminal.Config{
-		Level:      qrterminal.M,
-		Writer:     &buf,
-		HalfBlocks: true,
-		BlackChar:  qrterminal.BLACK_BLACK,
-		WhiteChar:  qrterminal.WHITE_WHITE,
+		Level:          qrterminal.M,
+		Writer:         &buf,
+		HalfBlocks:     true,
+		BlackChar:      qrterminal.BLACK_BLACK,
+		WhiteChar:      qrterminal.WHITE_WHITE,
 		BlackWhiteChar: qrterminal.BLACK_WHITE,
 		WhiteBlackChar: qrterminal.WHITE_BLACK,
-		QuietZone:  1,
+		QuietZone:      1,
 	})
 	return buf.String()
 }
