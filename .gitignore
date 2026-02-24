@@ -4,3 +4,5 @@ rooms
 last_dm_seen
 debug.log
 contacts
+groups
+config.toml
