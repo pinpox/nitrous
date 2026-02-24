@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/nbd-wtf/go-nostr"
+	"github.com/nbd-wtf/go-nostr/keyer"
 )
 
 func main() {
@@ -56,9 +57,18 @@ func main() {
 	mdStyle := detectGlamourStyle()
 	mdRender := newMarkdownRenderer(mdStyle)
 
-	pool := nostr.NewSimplePool(context.Background())
+	kr, err := keyer.NewPlainKeySigner(keys.SK)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "keyer error: %v\n", err)
+		os.Exit(1)
+	}
 
-	m := newModel(cfg, *configFlag, keys, pool, rooms, mdRender, mdStyle)
+	pool := nostr.NewSimplePool(context.Background(), nostr.WithAuthHandler(func(ctx context.Context, ie nostr.RelayEvent) error {
+		log.Printf("NIP-42 auth requested by %s", ie.Relay.URL)
+		return kr.SignEvent(ctx, ie.Event)
+	}))
+
+	m := newModel(cfg, *configFlag, keys, pool, kr, rooms, mdRender, mdStyle)
 
 	log.Println("starting TUI")
 	p := tea.NewProgram(&m, tea.WithAltScreen())

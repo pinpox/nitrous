@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/nbd-wtf/go-nostr"
 )
 
 type ProfileConfig struct {
@@ -123,6 +126,36 @@ func LoadRooms(cfgFlagPath string) ([]Room, error) {
 		}
 	}
 	return rooms, scanner.Err()
+}
+
+// lastDMSeenPath returns the path to the last_dm_seen timestamp file.
+func lastDMSeenPath(cfgFlagPath string) string {
+	dir := filepath.Dir(configPath(cfgFlagPath))
+	return filepath.Join(dir, "last_dm_seen")
+}
+
+// LoadLastDMSeen reads the last-seen DM timestamp from disk.
+// Returns 7 days ago if the file is missing or unreadable.
+func LoadLastDMSeen(cfgFlagPath string) nostr.Timestamp {
+	fallback := nostr.Timestamp(time.Now().Add(-7 * 24 * time.Hour).Unix())
+	data, err := os.ReadFile(lastDMSeenPath(cfgFlagPath))
+	if err != nil {
+		return fallback
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return nostr.Timestamp(v)
+}
+
+// SaveLastDMSeen writes the last-seen DM timestamp to disk.
+func SaveLastDMSeen(cfgFlagPath string, ts nostr.Timestamp) error {
+	path := lastDMSeenPath(cfgFlagPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strconv.FormatInt(int64(ts), 10)+"\n"), 0644)
 }
 
 // AppendRoom adds a room to the rooms file. Creates the file and parent dirs if needed.

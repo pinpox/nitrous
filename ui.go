@@ -112,6 +112,10 @@ var (
 	tabInactiveStyle = lipgloss.NewStyle().
 				Foreground(colorMuted).
 				Padding(0, 1)
+
+	qrTitleStyle = lipgloss.NewStyle().
+			Foreground(colorPrimary).
+			Bold(true)
 )
 
 // detectGlamourStyle queries the terminal background and returns "dark" or "light".

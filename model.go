@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	qrterminal "github.com/mdp/qrterminal/v3"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
 	"github.com/nbd-wtf/go-nostr"
@@ -32,6 +33,7 @@ type model struct {
 	cfgFlagPath string
 	keys        Keys
 	pool        *nostr.SimplePool
+	kr          nostr.Keyer
 	relays      []string
 	rooms       []Room // from rooms file
 
@@ -54,8 +56,9 @@ type model struct {
 	dmPeers      []string // pubkeys of DM peers
 	activeDMPeer int
 	dmMsgs       map[string][]ChatMessage
-	dmEvents     <-chan nostr.RelayEvent
+	dmEvents     <-chan nostr.Event
 	dmCancel     context.CancelFunc
+	lastDMSeen   nostr.Timestamp
 
 	// Components
 	viewport viewport.Model
@@ -78,9 +81,12 @@ type model struct {
 
 	// Status
 	statusMsg string
+
+	// QR overlay (non-empty = show full-screen QR)
+	qrOverlay string
 }
 
-func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool, rooms []Room, mdRender *glamour.TermRenderer, mdStyle string) model {
+func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool, kr nostr.Keyer, rooms []Room, mdRender *glamour.TermRenderer, mdStyle string) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message... (/help for commands)"
 	ta.Prompt = "> "
@@ -118,6 +124,7 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		cfgFlagPath: cfgFlagPath,
 		keys:        keys,
 		pool:        pool,
+		kr:          kr,
 		relays:      cfg.Relays,
 		rooms:       rooms,
 		width:  80,
@@ -127,6 +134,7 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		channelMsgs:    make(map[string][]ChatMessage),
 		dmMsgs:         make(map[string][]ChatMessage),
 		dmPeers:        []string{},
+		lastDMSeen:     LoadLastDMSeen(cfgFlagPath),
 		seenEvents:     make(map[string]bool),
 		profiles:        profiles,
 		profilePending:  make(map[string]bool),
@@ -154,7 +162,8 @@ func (m *model) Init() tea.Cmd {
 
 	cmds := []tea.Cmd{
 		textarea.Blink,
-		subscribeDMCmd(m.pool, m.relays, m.keys.PK),
+		subscribeDMCmd(m.pool, m.relays, m.kr, m.lastDMSeen),
+		publishDMRelaysCmd(m.pool, m.relays, m.keys),
 	}
 	if len(m.channels) > 0 {
 		cmds = append(cmds, subscribeChannelCmd(m.pool, m.relays, m.channels[0].ID))
@@ -272,6 +281,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !containsStr(m.dmPeers, peer) {
 			m.dmPeers = append(m.dmPeers, peer)
 		}
+		if cm.Timestamp > m.lastDMSeen {
+			m.lastDMSeen = cm.Timestamp
+			if err := SaveLastDMSeen(m.cfgFlagPath, m.lastDMSeen); err != nil {
+				log.Printf("dmEventMsg: failed to save last DM seen: %v", err)
+			}
+		}
 		if m.tab == tabDMs {
 			m.updateViewport()
 		}
@@ -297,6 +312,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Dismiss QR overlay on any key (except ctrl+c which still quits).
+		if m.qrOverlay != "" {
+			if msg.String() == "ctrl+c" {
+				if m.channelCancel != nil {
+					m.channelCancel()
+				}
+				if m.dmCancel != nil {
+					m.dmCancel()
+				}
+				return m, tea.Quit
+			}
+			m.qrOverlay = ""
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "ctrl+c":
 			if m.channelCancel != nil {
@@ -306,6 +336,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.dmCancel()
 			}
 			return m, tea.Quit
+
+		case "ctrl+left", "ctrl+right":
+			if m.tab == tabChannels {
+				m.tab = tabDMs
+			} else {
+				m.tab = tabChannels
+			}
+			m.updateViewport()
+			return m, nil
 
 		case "ctrl+up":
 			if m.tab == tabChannels && len(m.channels) > 1 {
@@ -359,7 +398,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.tab == tabDMs && len(m.dmPeers) > 0 {
 				peer := m.dmPeers[m.activeDMPeer]
-				return m, sendDM(m.pool, m.relays, peer, text, m.keys)
+				return m, sendDM(m.pool, m.relays, peer, text, m.keys, m.kr)
 			}
 			return m, nil
 		}
@@ -423,11 +462,26 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		}
 		return m.openDM(arg)
 
+	case "/me":
+		m.qrOverlay = renderQR("Your npub:", m.keys.NPub)
+		return m, nil
+
+	case "/room":
+		if m.tab != tabChannels || len(m.channels) == 0 {
+			m.addSystemMsg("no active channel — switch to a channel first")
+			return m, nil
+		}
+		ch := m.channels[m.activeChannel]
+		m.qrOverlay = renderQR("#"+ch.Name, ch.ID)
+		return m, nil
+
 	case "/help":
 		m.addSystemMsg("/create #name — create a new channel")
 		m.addSystemMsg("/join #name — join a channel from your rooms file")
 		m.addSystemMsg("/join <event-id> — join a channel by ID")
 		m.addSystemMsg("/dm <npub> — open a DM conversation")
+		m.addSystemMsg("/me — show QR code of your npub")
+		m.addSystemMsg("/room — show QR code of the current channel")
 		m.addSystemMsg("/help — show this help")
 		return m, nil
 
@@ -685,6 +739,10 @@ func (m *model) View() string {
 		return "Loading..."
 	}
 
+	if m.qrOverlay != "" {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.qrOverlay)
+	}
+
 	header := m.viewHeader()
 	sidebar := m.viewSidebar()
 	content := m.viewContent()
@@ -802,4 +860,22 @@ func containsStr(sl []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// renderQR renders a QR code with a title line above it.
+func renderQR(title, content string) string {
+	var buf strings.Builder
+	buf.WriteString(qrTitleStyle.Render(title))
+	buf.WriteString("\n\n")
+	qrterminal.GenerateWithConfig(content, qrterminal.Config{
+		Level:      qrterminal.M,
+		Writer:     &buf,
+		HalfBlocks: true,
+		BlackChar:  qrterminal.BLACK_BLACK,
+		WhiteChar:  qrterminal.WHITE_WHITE,
+		BlackWhiteChar: qrterminal.BLACK_WHITE,
+		WhiteBlackChar: qrterminal.WHITE_BLACK,
+		QuietZone:  1,
+	})
+	return buf.String()
 }
