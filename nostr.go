@@ -393,7 +393,36 @@ func sendDM(pool *nostr.SimplePool, relays []string, recipientPK string, content
 	}
 }
 
+// getPeerRelays fetches the NIP-65 relay list (kind 10002) for a pubkey
+// and returns the write relay URLs. Falls back to nil if not found.
+func getPeerRelays(pool *nostr.SimplePool, relays []string, pubkey string) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	re := pool.QuerySingle(ctx, relays, nostr.Filter{
+		Kinds:   []int{10002},
+		Authors: []string{pubkey},
+	})
+	if re == nil {
+		return nil
+	}
+
+	var urls []string
+	for _, tag := range re.Tags {
+		if len(tag) < 2 || tag[0] != "r" {
+			continue
+		}
+		// Include if no marker or marker is "write".
+		if len(tag) < 3 || tag[2] == "write" || tag[2] == "" {
+			urls = append(urls, tag[1])
+		}
+	}
+	return urls
+}
+
 // fetchProfileCmd fetches a kind-0 event (NIP-01 profile metadata) for a pubkey.
+// If not found on the user's relays, looks up the peer's NIP-65 relay list
+// and tries their write relays.
 func fetchProfileCmd(pool *nostr.SimplePool, relays []string, pubkey string) tea.Cmd {
 	return func() tea.Msg {
 		log.Printf("fetchProfile: pubkey=%s", shortPK(pubkey))
@@ -404,6 +433,19 @@ func fetchProfileCmd(pool *nostr.SimplePool, relays []string, pubkey string) tea
 			Kinds:   []int{0},
 			Authors: []string{pubkey},
 		})
+
+		// If not found locally, check the peer's NIP-65 relay list for their write relays.
+		if re == nil {
+			peerRelays := getPeerRelays(pool, relays, pubkey)
+			if len(peerRelays) > 0 {
+				log.Printf("fetchProfile: not on local relays, trying %d peer relays for %s", len(peerRelays), shortPK(pubkey))
+				re = pool.QuerySingle(ctx, peerRelays, nostr.Filter{
+					Kinds:   []int{0},
+					Authors: []string{pubkey},
+				})
+			}
+		}
+
 		if re == nil {
 			log.Printf("fetchProfile: not found for %s", shortPK(pubkey))
 			return profileResolvedMsg{PubKey: pubkey, DisplayName: shortPK(pubkey)}

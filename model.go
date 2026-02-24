@@ -213,6 +213,11 @@ func (m *model) Init() tea.Cmd {
 	if m.cfg.Profile.Name != "" || m.cfg.Profile.DisplayName != "" || m.cfg.Profile.About != "" || m.cfg.Profile.Picture != "" {
 		cmds = append(cmds, publishProfileCmd(m.pool, m.relays, m.cfg.Profile, m.keys))
 	}
+	// Fetch profiles for all known DM peers so display names are up to date.
+	for _, peer := range m.dmPeers {
+		cmds = append(cmds, fetchProfileCmd(m.pool, m.relays, peer))
+		m.profilePending[peer] = true
+	}
 	return tea.Batch(cmds...)
 }
 
