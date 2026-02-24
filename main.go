@@ -51,6 +51,13 @@ func main() {
 	}
 	log.Printf("rooms loaded: %d rooms", len(rooms))
 
+	contacts, err := LoadContacts(*configFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "contacts error: %v\n", err)
+		os.Exit(1)
+	}
+	log.Printf("contacts loaded: %d contacts", len(contacts))
+
 	// Create the markdown renderer before the TUI starts so the terminal
 	// background-color query (OSC 11) completes while stdio is still normal.
 	// Detect style once, store it for re-creation on resize.
@@ -68,7 +75,7 @@ func main() {
 		return kr.SignEvent(ctx, ie.Event)
 	}))
 
-	m := newModel(cfg, *configFlag, keys, pool, kr, rooms, mdRender, mdStyle)
+	m := newModel(cfg, *configFlag, keys, pool, kr, rooms, contacts, mdRender, mdStyle)
 
 	log.Println("starting TUI")
 	p := tea.NewProgram(&m, tea.WithAltScreen())

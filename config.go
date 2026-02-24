@@ -172,3 +172,98 @@ func AppendRoom(cfgFlagPath string, room Room) error {
 	_, err = fmt.Fprintf(f, "%s %s\n", room.Name, room.ID)
 	return err
 }
+
+// Contact maps a display name to a hex pubkey.
+type Contact struct {
+	Name   string
+	PubKey string
+}
+
+// contactsPath returns the path to the contacts file, in the same directory as the config.
+func contactsPath(cfgFlagPath string) string {
+	dir := filepath.Dir(configPath(cfgFlagPath))
+	return filepath.Join(dir, "contacts")
+}
+
+// LoadContacts reads the contacts file. Each line is "name hex_pubkey".
+// Returns an empty slice if the file doesn't exist.
+func LoadContacts(cfgFlagPath string) ([]Contact, error) {
+	path := contactsPath(cfgFlagPath)
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	var contacts []Contact
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		pk := strings.TrimSpace(parts[1])
+		if name != "" && pk != "" {
+			contacts = append(contacts, Contact{Name: name, PubKey: pk})
+		}
+	}
+	return contacts, scanner.Err()
+}
+
+// AppendContact adds a contact to the contacts file if not already present.
+func AppendContact(cfgFlagPath string, contact Contact) error {
+	existing, _ := LoadContacts(cfgFlagPath)
+	for _, c := range existing {
+		if c.PubKey == contact.PubKey {
+			return nil
+		}
+	}
+
+	path := contactsPath(cfgFlagPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%s %s\n", contact.Name, contact.PubKey)
+	return err
+}
+
+// UpdateContactName rewrites the contact's name in the contacts file.
+// No-op if the pubkey is not in the file or the name is unchanged.
+func UpdateContactName(cfgFlagPath string, pubkey, newName string) error {
+	contacts, err := LoadContacts(cfgFlagPath)
+	if err != nil || len(contacts) == 0 {
+		return err
+	}
+
+	changed := false
+	for i, c := range contacts {
+		if c.PubKey == pubkey && c.Name != newName {
+			contacts[i].Name = newName
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return nil
+	}
+
+	path := contactsPath(cfgFlagPath)
+	var lines []string
+	for _, c := range contacts {
+		lines = append(lines, fmt.Sprintf("%s %s", c.Name, c.PubKey))
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}

@@ -120,7 +120,7 @@ func (m *model) sidebarTotal() int {
 	return len(m.channels) + len(m.dmPeers)
 }
 
-func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool, kr nostr.Keyer, rooms []Room, mdRender *glamour.TermRenderer, mdStyle string) model {
+func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool, kr nostr.Keyer, rooms []Room, contacts []Contact, mdRender *glamour.TermRenderer, mdStyle string) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message... (/help for commands)"
 	ta.Prompt = "> "
@@ -153,6 +153,13 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 
 	profiles := map[string]string{keys.PK: ownName}
 
+	// Seed DM peers and profiles from contacts file.
+	var dmPeers []string
+	for _, c := range contacts {
+		dmPeers = append(dmPeers, c.PubKey)
+		profiles[c.PubKey] = c.Name
+	}
+
 	return model{
 		cfg:         cfg,
 		cfgFlagPath: cfgFlagPath,
@@ -167,7 +174,7 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		channels:       channels,
 		channelMsgs:    make(map[string][]ChatMessage),
 		dmMsgs:         make(map[string][]ChatMessage),
-		dmPeers:        []string{},
+		dmPeers:        dmPeers,
 		lastDMSeen:     LoadLastDMSeen(cfgFlagPath),
 		seenEvents:     make(map[string]bool),
 		localDMEchoes:  make(map[string]bool),
@@ -329,6 +336,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dmMsgs[peer] = appendMessage(m.dmMsgs[peer], cm, m.cfg.MaxMessages)
 		if !containsStr(m.dmPeers, peer) {
 			m.dmPeers = append(m.dmPeers, peer)
+			if err := AppendContact(m.cfgFlagPath, Contact{Name: m.resolveAuthor(peer), PubKey: peer}); err != nil {
+				log.Printf("dmEventMsg: failed to save contact: %v", err)
+			}
 		}
 		if cm.Timestamp > m.lastDMSeen {
 			m.lastDMSeen = cm.Timestamp
@@ -377,6 +387,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		log.Printf("profileResolvedMsg: %s -> %q", shortPK(msg.PubKey), msg.DisplayName)
 		m.profiles[msg.PubKey] = msg.DisplayName
 		delete(m.profilePending, msg.PubKey)
+		if containsStr(m.dmPeers, msg.PubKey) {
+			if err := UpdateContactName(m.cfgFlagPath, msg.PubKey, msg.DisplayName); err != nil {
+				log.Printf("profileResolvedMsg: failed to update contact name: %v", err)
+			}
+		}
 		m.updateViewport()
 		return m, nil
 
@@ -617,6 +632,9 @@ func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
 
 	if !containsStr(m.dmPeers, pk) {
 		m.dmPeers = append(m.dmPeers, pk)
+		if err := AppendContact(m.cfgFlagPath, Contact{Name: m.resolveAuthor(pk), PubKey: pk}); err != nil {
+			log.Printf("openDM: failed to save contact: %v", err)
+		}
 	}
 
 	for i, p := range m.dmPeers {
@@ -754,7 +772,11 @@ func (m *model) updateViewport() {
 		}
 		displayName := msg.Author
 		if msg.PubKey != "" {
-			displayName = m.resolveAuthor(msg.PubKey)
+			if msg.IsMine {
+				displayName = m.resolveAuthor(m.keys.PK)
+			} else {
+				displayName = m.resolveAuthor(msg.PubKey)
+			}
 		}
 		ts := chatTimestampStyle.Render(msg.Timestamp.Time().Format("15:04"))
 		author := authorStyle.Render(displayName)
