@@ -90,6 +90,10 @@ type model struct {
 	// Input tracking
 	lastInputHeight int
 
+	// Autocomplete
+	acSuggestions []string
+	acIndex       int
+
 	// Status
 	statusMsg string
 
@@ -651,6 +655,34 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Autocomplete key handling — intercept before textarea.
+		if len(m.acSuggestions) > 0 {
+			switch msg.String() {
+			case "tab":
+				m.acIndex = (m.acIndex + 1) % len(m.acSuggestions)
+				return m, nil
+			case "shift+tab":
+				m.acIndex--
+				if m.acIndex < 0 {
+					m.acIndex = len(m.acSuggestions) - 1
+				}
+				return m, nil
+			case "enter":
+				m.acceptSuggestion()
+				return m, nil
+			case "esc":
+				m.acSuggestions = nil
+				m.acIndex = 0
+				return m, nil
+			}
+		} else if msg.String() == "tab" {
+			// Open autocomplete on first Tab press.
+			m.updateSuggestions()
+			if len(m.acSuggestions) > 0 {
+				return m, nil
+			}
+		}
+
 		switch msg.String() {
 		case "ctrl+c":
 			if m.channelCancel != nil {
@@ -704,6 +736,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.input.Reset()
+			m.acSuggestions = nil
+			m.acIndex = 0
 			m.input.SetHeight(inputMinHeight)
 			m.lastInputHeight = inputMinHeight
 			m.updateLayout()
@@ -752,10 +786,232 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.input, cmd = m.input.Update(msg)
 	cmds = append(cmds, cmd)
 
+	// Re-filter suggestions as the user types (only when already open).
+	if len(m.acSuggestions) > 0 {
+		m.updateSuggestions()
+	}
+
 	// Shrink textarea when lines are removed (e.g. backspace joining lines).
 	m.syncInputHeight()
 
 	return m, tea.Batch(cmds...)
+}
+
+// updateSuggestions generates context-aware autocomplete suggestions based on
+// the current input value.
+func (m *model) updateSuggestions() {
+	text := m.input.Value()
+	if !strings.HasPrefix(text, "/") {
+		m.acSuggestions = nil
+		m.acIndex = 0
+		return
+	}
+
+	tokens := strings.Fields(text)
+	if len(tokens) == 0 {
+		m.acSuggestions = nil
+		m.acIndex = 0
+		return
+	}
+
+	// If input ends with a space, the user is starting a new token.
+	trailingSpace := len(text) > 0 && text[len(text)-1] == ' '
+
+	var suggestions []string
+
+	switch {
+	case len(tokens) == 1 && !trailingSpace:
+		// Partial top-level command: /he → /help
+		commands := []string{"/create", "/join", "/dm", "/me", "/room", "/delete", "/group", "/invite", "/leave", "/help"}
+		prefix := strings.ToLower(tokens[0])
+		for _, c := range commands {
+			if strings.HasPrefix(c, prefix) && c != prefix {
+				suggestions = append(suggestions, c)
+			}
+		}
+
+	case strings.ToLower(tokens[0]) == "/group":
+		subcommands := []string{"create", "set", "user", "name", "about", "picture"}
+		switch {
+		case len(tokens) == 1 && trailingSpace:
+			// "/group " → show all subcommands
+			suggestions = subcommands
+		case len(tokens) == 2 && !trailingSpace:
+			// "/group na" → filter subcommands
+			prefix := strings.ToLower(tokens[1])
+			for _, sc := range subcommands {
+				if strings.HasPrefix(sc, prefix) && sc != prefix {
+					suggestions = append(suggestions, sc)
+				}
+			}
+		case len(tokens) == 2 && trailingSpace:
+			// "/group set " → show options for the subcommand
+			sub := strings.ToLower(tokens[1])
+			if sub == "set" {
+				suggestions = []string{"open", "closed"}
+			} else if sub == "user" {
+				suggestions = []string{"add"}
+			}
+		case len(tokens) == 3 && !trailingSpace:
+			sub := strings.ToLower(tokens[1])
+			if sub == "set" {
+				options := []string{"open", "closed"}
+				prefix := strings.ToLower(tokens[2])
+				for _, o := range options {
+					if strings.HasPrefix(o, prefix) && o != prefix {
+						suggestions = append(suggestions, o)
+					}
+				}
+			} else if sub == "user" {
+				options := []string{"add"}
+				prefix := strings.ToLower(tokens[2])
+				for _, o := range options {
+					if strings.HasPrefix(o, prefix) && o != prefix {
+						suggestions = append(suggestions, o)
+					}
+				}
+			}
+		}
+
+	case strings.ToLower(tokens[0]) == "/join":
+		// "/join #<partial>" → filter channel names
+		if (len(tokens) == 1 && trailingSpace) || (len(tokens) == 2 && !trailingSpace) {
+			partial := ""
+			if len(tokens) == 2 {
+				partial = tokens[1]
+			}
+			for _, ch := range m.channels {
+				candidate := "#" + ch.Name
+				if partial == "" || (strings.HasPrefix(strings.ToLower(candidate), strings.ToLower(partial)) && !strings.EqualFold(candidate, partial)) {
+					suggestions = append(suggestions, candidate)
+				}
+			}
+		}
+
+	case strings.ToLower(tokens[0]) == "/dm" || strings.ToLower(tokens[0]) == "/invite":
+		// "/dm <partial>" or "/invite <partial>" → filter contact display names
+		if (len(tokens) == 1 && trailingSpace) || (len(tokens) == 2 && !trailingSpace) {
+			partial := ""
+			if len(tokens) == 2 {
+				partial = strings.ToLower(tokens[1])
+			}
+			for _, peer := range m.dmPeers {
+				name := m.resolveAuthor(peer)
+				if partial == "" || (strings.HasPrefix(strings.ToLower(name), partial) && !strings.EqualFold(name, partial)) {
+					suggestions = append(suggestions, name)
+				}
+			}
+		}
+	}
+
+	if len(suggestions) == 0 {
+		m.acSuggestions = nil
+		m.acIndex = 0
+		return
+	}
+
+	// Reset index when the suggestion list changes.
+	if !slicesEqual(suggestions, m.acSuggestions) {
+		m.acIndex = 0
+	}
+	m.acSuggestions = suggestions
+}
+
+// acceptSuggestion replaces the partial token in input with the selected suggestion.
+func (m *model) acceptSuggestion() {
+	if len(m.acSuggestions) == 0 {
+		return
+	}
+	if m.acIndex >= len(m.acSuggestions) {
+		m.acIndex = 0
+	}
+
+	selected := m.acSuggestions[m.acIndex]
+	text := m.input.Value()
+	tokens := strings.Fields(text)
+
+	var newText string
+	if len(tokens) == 1 && strings.HasPrefix(selected, "/") {
+		// Completing the command itself: replace entire text.
+		newText = selected + " "
+	} else {
+		// Completing a subcommand or argument: replace from last space.
+		lastSpace := strings.LastIndex(text, " ")
+		if lastSpace >= 0 {
+			newText = text[:lastSpace+1] + selected + " "
+		} else {
+			newText = selected + " "
+		}
+	}
+
+	m.input.SetValue(newText)
+	m.acSuggestions = nil
+	m.acIndex = 0
+}
+
+// viewAutocomplete renders suggestions as a horizontal row.
+func (m *model) viewAutocomplete() string {
+	maxWidth := m.viewport.Width
+
+	// Pre-render all items so we know their widths.
+	rendered := make([]string, len(m.acSuggestions))
+	widths := make([]int, len(m.acSuggestions))
+	for i, s := range m.acSuggestions {
+		if i == m.acIndex {
+			rendered[i] = acSelectedStyle.Render(s)
+		} else {
+			rendered[i] = acSuggestionStyle.Render(s)
+		}
+		widths[i] = lipgloss.Width(rendered[i])
+	}
+
+	// Find a window of items that fits within maxWidth, ensuring the
+	// selected item is always visible.
+	start := m.acIndex
+	end := m.acIndex + 1
+	used := widths[m.acIndex]
+
+	// Expand right, then left, alternating to keep selection roughly centered.
+	for {
+		grew := false
+		if end < len(m.acSuggestions) && used+widths[end] <= maxWidth {
+			used += widths[end]
+			end++
+			grew = true
+		}
+		if start > 0 && used+widths[start-1] <= maxWidth {
+			start--
+			used += widths[start]
+			grew = true
+		}
+		if !grew {
+			break
+		}
+	}
+
+	var parts []string
+	if start > 0 {
+		parts = append(parts, acSuggestionStyle.Render("◂"))
+	}
+	parts = append(parts, rendered[start:end]...)
+	if end < len(m.acSuggestions) {
+		parts = append(parts, acSuggestionStyle.Render("▸"))
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+}
+
+// slicesEqual reports whether two string slices have equal contents.
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
@@ -1381,6 +1637,9 @@ func (m *model) sidebarWidth() int {
 func (m *model) updateLayout() {
 	contentWidth := m.width - m.sidebarWidth() - sidebarBorder
 	contentHeight := m.height - contentTitleHeight - statusHeight - m.lastInputHeight
+	if len(m.acSuggestions) > 0 {
+		contentHeight-- // autocomplete bar takes one line
+	}
 
 	if contentWidth < 10 {
 		contentWidth = 10
@@ -1567,7 +1826,13 @@ func (m *model) viewContent() string {
 	inputView := m.input.View()
 	vp := m.viewport.View()
 
-	inner := lipgloss.JoinVertical(lipgloss.Left, titleBar, vp, inputView)
+	var inner string
+	if len(m.acSuggestions) > 0 {
+		acView := m.viewAutocomplete()
+		inner = lipgloss.JoinVertical(lipgloss.Left, titleBar, vp, acView, inputView)
+	} else {
+		inner = lipgloss.JoinVertical(lipgloss.Left, titleBar, vp, inputView)
+	}
 
 	return lipgloss.NewStyle().Height(totalHeight).MaxHeight(totalHeight).Render(inner)
 }

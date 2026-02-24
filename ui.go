@@ -106,6 +106,16 @@ var (
 	qrTitleStyle = lipgloss.NewStyle().
 		Foreground(colorPrimary).
 		Bold(true)
+
+	acSuggestionStyle = lipgloss.NewStyle().
+		Foreground(colorWhite).
+		Padding(0, 1)
+
+	acSelectedStyle = lipgloss.NewStyle().
+		Foreground(colorHighlight).
+		Background(colorSecondary).
+		Bold(true).
+		Padding(0, 1)
 )
 
 // detectGlamourStyle queries the terminal background and returns "dark" or "light".
