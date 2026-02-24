@@ -61,7 +61,8 @@ type model struct {
 	globalMsgs []ChatMessage
 
 	// Dedup
-	seenEvents map[string]bool
+	seenEvents   map[string]bool
+	localDMEchoes map[string]bool // "peer:content" keys for sent DMs awaiting relay echo
 
 	// Profile resolution (NIP-01 kind 0)
 	profiles       map[string]string // pubkey -> display name
@@ -169,6 +170,7 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		dmPeers:        []string{},
 		lastDMSeen:     LoadLastDMSeen(cfgFlagPath),
 		seenEvents:     make(map[string]bool),
+		localDMEchoes:  make(map[string]bool),
 		profiles:       profiles,
 		profilePending: make(map[string]bool),
 		lastInputHeight: inputMinHeight,
@@ -298,7 +300,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case dmEventMsg:
 		cm := ChatMessage(msg)
-		log.Printf("dmEventMsg: author=%s id=%s", cm.Author, cm.EventID)
+		log.Printf("dmEventMsg: author=%s id=%s mine=%v", cm.Author, cm.EventID, cm.IsMine)
 		if m.seenEvents[cm.EventID] {
 			if m.dmEvents != nil {
 				return m, waitForDMEvent(m.dmEvents, m.keys)
@@ -306,6 +308,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.seenEvents[cm.EventID] = true
+
+		// Content-based dedup for our own DMs: the local echo from sendDM and
+		// the relay echo from the subscription have different synthetic EventIDs,
+		// so seenEvents can't catch the duplicate. Track by peer+content instead.
+		if cm.IsMine {
+			echoKey := cm.PubKey + ":" + cm.Content
+			if m.localDMEchoes[echoKey] {
+				log.Printf("dmEventMsg: skipping relay echo (already have local echo)")
+				delete(m.localDMEchoes, echoKey)
+				if m.dmEvents != nil {
+					return m, waitForDMEvent(m.dmEvents, m.keys)
+				}
+				return m, nil
+			}
+			m.localDMEchoes[echoKey] = true
+		}
+
 		peer := cm.PubKey
 		m.dmMsgs[peer] = appendMessage(m.dmMsgs[peer], cm, m.cfg.MaxMessages)
 		if !containsStr(m.dmPeers, peer) {
