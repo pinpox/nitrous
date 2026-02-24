@@ -50,13 +50,11 @@ func colorForPubkey(pubkey string) lipgloss.Color {
 
 // Layout constants
 const (
-	minSidebarWidth   = 12
-	sidebarPadding    = 3 // "#", "~", or "@" prefix + left/right padding
-	sidebarBorder     = 1 // right border on sidebar
-	inputMinHeight    = 1
-	inputMaxHeight    = 8
-	contentTitleHeight = 1 // channel/DM name above viewport
-	statusHeight      = 1 // bottom status bar
+	minSidebarWidth = 12
+	sidebarPadding  = 3 // "#", "~", or "@" prefix + left/right padding
+	sidebarBorder   = 1 // right border on sidebar
+	inputMinHeight  = 1
+	inputMaxHeight  = 8
 )
 
 // Styles

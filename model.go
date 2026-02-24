@@ -1634,23 +1634,44 @@ func (m *model) sidebarWidth() int {
 	return w
 }
 
+// renderTitleBar returns the rendered title bar for the current selection.
+func (m *model) renderTitleBar() string {
+	var title string
+	if m.isChannelSelected() && len(m.channels) > 0 {
+		title = "#" + m.channels[m.activeChannelIdx()].Name
+	} else if m.isGroupSelected() && len(m.groups) > 0 {
+		title = "~" + m.groups[m.activeGroupIdx()].Name
+	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
+		title = "@" + m.resolveAuthor(m.dmPeers[m.activeDMPeerIdx()])
+	}
+	return lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Padding(0, 1).Render(title)
+}
+
 func (m *model) updateLayout() {
 	contentWidth := m.width - m.sidebarWidth() - sidebarBorder
-	contentHeight := m.height - contentTitleHeight - statusHeight - m.lastInputHeight
-	if len(m.acSuggestions) > 0 {
-		contentHeight-- // autocomplete bar takes one line
-	}
-
 	if contentWidth < 10 {
 		contentWidth = 10
 	}
+
+	// Set widths first so measured heights are accurate.
+	m.viewport.Width = contentWidth
+	m.input.SetWidth(contentWidth)
+
+	// Measure fixed-height components dynamically.
+	titleHeight := lipgloss.Height(m.renderTitleBar())
+	statusHeight := lipgloss.Height(m.viewStatusBar())
+	inputHeight := lipgloss.Height(m.input.View())
+	acHeight := 0
+	if len(m.acSuggestions) > 0 {
+		acHeight = lipgloss.Height(m.viewAutocomplete())
+	}
+
+	contentHeight := m.height - titleHeight - statusHeight - inputHeight - acHeight
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
 
-	m.viewport.Width = contentWidth
 	m.viewport.Height = contentHeight
-	m.input.SetWidth(contentWidth)
 	m.updateViewport()
 }
 
@@ -1757,7 +1778,7 @@ func (m *model) View() string {
 }
 
 func (m *model) viewSidebar() string {
-	contentHeight := m.height - statusHeight
+	contentHeight := m.height - lipgloss.Height(m.viewStatusBar())
 	sw := m.sidebarWidth()
 	var items []string
 
@@ -1811,18 +1832,9 @@ func (m *model) viewSidebar() string {
 }
 
 func (m *model) viewContent() string {
-	totalHeight := m.height - statusHeight
+	totalHeight := m.height - lipgloss.Height(m.viewStatusBar())
 
-	var title string
-	if m.isChannelSelected() && len(m.channels) > 0 {
-		title = "#" + m.channels[m.activeChannelIdx()].Name
-	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		title = "~" + m.groups[m.activeGroupIdx()].Name
-	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
-		title = "@" + m.resolveAuthor(m.dmPeers[m.activeDMPeerIdx()])
-	}
-
-	titleBar := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Padding(0, 1).Render(title)
+	titleBar := m.renderTitleBar()
 	inputView := m.input.View()
 	vp := m.viewport.View()
 
