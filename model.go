@@ -563,11 +563,15 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		m.qrOverlay = renderQR("#"+ch.Name, ch.ID)
 		return m, nil
 
+	case "/leave":
+		return m.leaveCurrentItem()
+
 	case "/help":
 		m.addSystemMsg("/create #name — create a new channel")
 		m.addSystemMsg("/join #name — join a channel from your rooms file")
 		m.addSystemMsg("/join <event-id> — join a channel by ID")
 		m.addSystemMsg("/dm <npub> — open a DM conversation")
+		m.addSystemMsg("/leave — leave the current channel or DM")
 		m.addSystemMsg("/me — show QR code of your npub")
 		m.addSystemMsg("/room — show QR code of the current channel")
 		m.addSystemMsg("/help — show this help")
@@ -644,6 +648,70 @@ func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.updateViewport()
+	return m, nil
+}
+
+// leaveCurrentItem removes the currently selected channel or DM from the
+// sidebar and deletes it from the rooms/contacts file.
+func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
+	total := m.sidebarTotal()
+	if total == 0 {
+		m.addSystemMsg("nothing to leave")
+		return m, nil
+	}
+
+	if m.isChannelSelected() && len(m.channels) > 0 {
+		idx := m.activeChannelIdx()
+		ch := m.channels[idx]
+
+		// Cancel subscription if this is the active one.
+		if ch.ID == m.channelSubID && m.channelCancel != nil {
+			m.channelCancel()
+			m.channelEvents = nil
+			m.channelCancel = nil
+			m.channelSubID = ""
+		}
+
+		// Remove from channels list and message history.
+		m.channels = append(m.channels[:idx], m.channels[idx+1:]...)
+		delete(m.channelMsgs, ch.ID)
+
+		// Remove from rooms file.
+		if err := RemoveRoom(m.cfgFlagPath, ch.ID); err != nil {
+			log.Printf("leaveCurrentItem: failed to remove room: %v", err)
+		}
+
+		log.Printf("leaveCurrentItem: left channel #%s", ch.Name)
+	} else if !m.isChannelSelected() && len(m.dmPeers) > 0 {
+		idx := m.activeDMPeerIdx()
+		peer := m.dmPeers[idx]
+
+		// Remove from peers list and message history.
+		m.dmPeers = append(m.dmPeers[:idx], m.dmPeers[idx+1:]...)
+		delete(m.dmMsgs, peer)
+
+		// Remove from contacts file.
+		if err := RemoveContact(m.cfgFlagPath, peer); err != nil {
+			log.Printf("leaveCurrentItem: failed to remove contact: %v", err)
+		}
+
+		log.Printf("leaveCurrentItem: left DM with %s", m.resolveAuthor(peer))
+	}
+
+	// Clamp activeItem to valid range.
+	total = m.sidebarTotal()
+	if total == 0 {
+		m.activeItem = 0
+	} else if m.activeItem >= total {
+		m.activeItem = total - 1
+	}
+
+	m.updateViewport()
+
+	// Subscribe to the new active channel if one is selected.
+	if m.isChannelSelected() && len(m.channels) > 0 {
+		return m, subscribeChannelCmd(m.pool, m.relays, m.activeChannelID())
+	}
 	return m, nil
 }
 

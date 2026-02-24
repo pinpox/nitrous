@@ -173,6 +173,29 @@ func AppendRoom(cfgFlagPath string, room Room) error {
 	return err
 }
 
+// RemoveRoom removes a room by ID from the rooms file.
+func RemoveRoom(cfgFlagPath string, id string) error {
+	rooms, err := LoadRooms(cfgFlagPath)
+	if err != nil {
+		return err
+	}
+	var kept []Room
+	for _, r := range rooms {
+		if r.ID != id {
+			kept = append(kept, r)
+		}
+	}
+	if len(kept) == len(rooms) {
+		return nil
+	}
+	path := roomsPath(cfgFlagPath)
+	var lines []string
+	for _, r := range kept {
+		lines = append(lines, fmt.Sprintf("%s %s", r.Name, r.ID))
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}
+
 // Contact maps a display name to a hex pubkey.
 type Contact struct {
 	Name   string
@@ -238,6 +261,29 @@ func AppendContact(cfgFlagPath string, contact Contact) error {
 	defer f.Close()
 	_, err = fmt.Fprintf(f, "%s %s\n", contact.Name, contact.PubKey)
 	return err
+}
+
+// RemoveContact removes a contact by pubkey from the contacts file.
+func RemoveContact(cfgFlagPath string, pubkey string) error {
+	contacts, err := LoadContacts(cfgFlagPath)
+	if err != nil {
+		return err
+	}
+	var kept []Contact
+	for _, c := range contacts {
+		if c.PubKey != pubkey {
+			kept = append(kept, c)
+		}
+	}
+	if len(kept) == len(contacts) {
+		return nil
+	}
+	path := contactsPath(cfgFlagPath)
+	var lines []string
+	for _, c := range kept {
+		lines = append(lines, fmt.Sprintf("%s %s", c.Name, c.PubKey))
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
 
 // UpdateContactName rewrites the contact's name in the contacts file.
