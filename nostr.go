@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"strings"
 	"sync"
@@ -17,6 +19,7 @@ import (
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip17"
 	"github.com/nbd-wtf/go-nostr/nip19"
+	"github.com/nbd-wtf/go-nostr/nip29"
 	"github.com/nbd-wtf/go-nostr/nip59"
 )
 
@@ -41,6 +44,7 @@ type ChatMessage struct {
 	Timestamp nostr.Timestamp
 	EventID   string
 	ChannelID string // NIP-28 channel this message belongs to
+	GroupKey  string // NIP-29 group key "relay_url\tgroup_id" (empty for channels/DMs)
 	IsMine    bool
 }
 
@@ -468,11 +472,10 @@ func getPeerRelays(pool *nostr.SimplePool, relays []string, pubkey string) []str
 		if len(tag) < 2 || tag[0] != "r" {
 			continue
 		}
-		// Include if no marker or marker is "write".
-		if len(tag) < 3 || tag[2] == "write" || tag[2] == "" {
-			urls = append(urls, tag[1])
-		}
+		log.Printf("getPeerRelays: %s tag: %v", shortPK(pubkey), tag)
+		urls = append(urls, tag[1])
 	}
+	log.Printf("getPeerRelays: %s -> %v", shortPK(pubkey), urls)
 	return urls
 }
 
@@ -593,6 +596,455 @@ func publishDMRelaysCmd(pool *nostr.SimplePool, relays []string, keys Keys) tea.
 
 		log.Printf("publishDMRelays: published kind 10050 with %d relays", len(relays))
 		return nil
+	}
+}
+
+// --- NIP-29 Relay-Based Groups ---
+
+// groupKey builds a map key from relay URL and group ID.
+func groupKey(relayURL, groupID string) string {
+	return relayURL + "\t" + groupID
+}
+
+// splitGroupKey extracts the relay URL and group ID from a group key.
+func splitGroupKey(gk string) (relayURL, groupID string) {
+	parts := strings.SplitN(gk, "\t", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return "", gk
+}
+
+// Bubbletea message types for NIP-29 group events.
+type groupEventMsg ChatMessage
+type groupSubStartedMsg struct {
+	groupKey string
+	events   <-chan nostr.RelayEvent
+	cancel   context.CancelFunc
+}
+type groupSubEndedMsg struct{ groupKey string }
+type groupReconnectMsg struct{ groupKey string }
+type groupMetaMsg struct {
+	RelayURL string
+	GroupID  string
+	Name     string
+}
+type groupJoinedMsg struct {
+	RelayURL string
+	GroupID  string
+	Name     string
+}
+
+// subscribeGroupCmd opens a subscription on a single relay for a NIP-29 group.
+// Subscribes to both kind 9 (chat messages) and kind 39000 (metadata) using
+// separate filters since they use different tag keys ("h" vs "d").
+func subscribeGroupCmd(pool *nostr.SimplePool, relayURL, groupID string) tea.Cmd {
+	return func() tea.Msg {
+		gk := groupKey(relayURL, groupID)
+		log.Printf("subscribeGroupCmd: relay=%s group=%s", relayURL, groupID)
+		ctx, cancel := context.WithCancel(context.Background())
+		ch := pool.SubMany(ctx, []string{relayURL}, nostr.Filters{
+			{
+				Kinds: []int{nostr.KindSimpleGroupChatMessage},
+				Tags:  nostr.TagMap{"h": {groupID}},
+				Limit: 50,
+			},
+			{
+				Kinds: []int{nostr.KindSimpleGroupMetadata},
+				Tags:  nostr.TagMap{"d": {groupID}},
+				Limit: 1,
+			},
+		})
+		return groupSubStartedMsg{groupKey: gk, events: ch, cancel: cancel}
+	}
+}
+
+// waitForGroupEvent blocks on the group subscription channel and returns the next event.
+// Returns groupMetaMsg for kind 39000 metadata events and groupEventMsg for chat messages.
+func waitForGroupEvent(events <-chan nostr.RelayEvent, gk string, relayURL string, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		re, ok := <-events
+		if !ok {
+			return groupSubEndedMsg{groupKey: gk}
+		}
+
+		// Handle metadata events (kind 39000) — extract group name from tags.
+		if re.Kind == nostr.KindSimpleGroupMetadata {
+			groupID := ""
+			name := ""
+			for _, tag := range re.Tags {
+				if len(tag) >= 2 {
+					switch tag[0] {
+					case "d":
+						groupID = tag[1]
+					case "name":
+						name = tag[1]
+					}
+				}
+			}
+			if name != "" && groupID != "" {
+				log.Printf("waitForGroupEvent: got metadata for group %s: name=%q", groupID, name)
+				return groupMetaMsg{RelayURL: relayURL, GroupID: groupID, Name: name}
+			}
+		}
+
+		return groupEventMsg(ChatMessage{
+			Author:    shortPK(re.PubKey),
+			PubKey:    re.PubKey,
+			Content:   re.Content,
+			Timestamp: re.CreatedAt,
+			EventID:   re.ID,
+			GroupKey:  gk,
+			IsMine:    re.PubKey == keys.PK,
+		})
+	}
+}
+
+// publishGroupMessage signs and publishes a kind-9 message to a NIP-29 group.
+func publishGroupMessage(pool *nostr.SimplePool, relayURL, groupID, content string, previousIDs []string, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		gk := groupKey(relayURL, groupID)
+		tags := nostr.Tags{{"h", groupID}}
+		tags = append(tags, pickPreviousTags(previousIDs)...)
+		evt := nostr.Event{
+			Kind:      nostr.KindSimpleGroupChatMessage,
+			CreatedAt: nostr.Now(),
+			Tags:      tags,
+			Content:   content,
+		}
+		if err := evt.Sign(keys.SK); err != nil {
+			return nostrErrMsg{err}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r, err := pool.EnsureRelay(relayURL)
+		if err != nil {
+			return nostrErrMsg{fmt.Errorf("group publish: connect %s: %w", relayURL, err)}
+		}
+		if err := r.Publish(ctx, evt); err != nil {
+			return nostrErrMsg{fmt.Errorf("group publish: %w", err)}
+		}
+
+		return groupEventMsg(ChatMessage{
+			Author:    shortPK(keys.PK),
+			PubKey:    keys.PK,
+			Content:   content,
+			Timestamp: evt.CreatedAt,
+			EventID:   evt.GetID(),
+			GroupKey:  gk,
+			IsMine:    true,
+		})
+	}
+}
+
+// joinGroupCmd publishes a kind-9021 join request for a NIP-29 group.
+func joinGroupCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs []string, inviteCode string, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		tags := nostr.Tags{{"h", groupID}}
+		if inviteCode != "" {
+			tags = append(tags, nostr.Tag{"code", inviteCode})
+		}
+		tags = append(tags, pickPreviousTags(previousIDs)...)
+		evt := nostr.Event{
+			Kind:      nostr.KindSimpleGroupJoinRequest,
+			CreatedAt: nostr.Now(),
+			Tags:      tags,
+		}
+		if err := evt.Sign(keys.SK); err != nil {
+			return nostrErrMsg{fmt.Errorf("group join: sign: %w", err)}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r, err := pool.EnsureRelay(relayURL)
+		if err != nil {
+			return nostrErrMsg{fmt.Errorf("group join: connect %s: %w", relayURL, err)}
+		}
+		if err := r.Publish(ctx, evt); err != nil {
+			return nostrErrMsg{fmt.Errorf("group join: publish: %w", err)}
+		}
+
+		log.Printf("joinGroupCmd: sent kind 9021 to %s for group %s", relayURL, groupID)
+		return groupJoinedMsg{RelayURL: relayURL, GroupID: groupID}
+	}
+}
+
+// leaveGroupCmd publishes a kind-9022 leave request for a NIP-29 group.
+func leaveGroupCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs []string, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		tags := nostr.Tags{{"h", groupID}}
+		tags = append(tags, pickPreviousTags(previousIDs)...)
+		evt := nostr.Event{
+			Kind:      nostr.KindSimpleGroupLeaveRequest,
+			CreatedAt: nostr.Now(),
+			Tags:      tags,
+		}
+		if err := evt.Sign(keys.SK); err != nil {
+			return nostrErrMsg{fmt.Errorf("group leave: sign: %w", err)}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r, err := pool.EnsureRelay(relayURL)
+		if err != nil {
+			return nostrErrMsg{fmt.Errorf("group leave: connect %s: %w", relayURL, err)}
+		}
+		if err := r.Publish(ctx, evt); err != nil {
+			log.Printf("leaveGroupCmd: publish failed (may already be left): %v", err)
+		}
+		log.Printf("leaveGroupCmd: sent kind 9022 to %s for group %s", relayURL, groupID)
+		return nil
+	}
+}
+
+// fetchGroupMetaCmd fetches a kind-39000 event to resolve the group name.
+func fetchGroupMetaCmd(pool *nostr.SimplePool, relayURL, groupID string) tea.Cmd {
+	return func() tea.Msg {
+		log.Printf("fetchGroupMeta: relay=%s group=%s", relayURL, groupID)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		re := pool.QuerySingle(ctx, []string{relayURL}, nostr.Filter{
+			Kinds: []int{nostr.KindSimpleGroupMetadata},
+			Tags:  nostr.TagMap{"d": {groupID}},
+		})
+		if re == nil {
+			log.Printf("fetchGroupMeta: not found for %s on %s", groupID, relayURL)
+			return nil
+		}
+
+		g, err := nip29.NewGroupFromMetadataEvent(relayURL, re.Event)
+		if err != nil {
+			log.Printf("fetchGroupMeta: merge error: %v", err)
+			return nil
+		}
+		name := g.Name
+		if name == "" {
+			// Metadata event exists but has no name field; don't overwrite.
+			return nil
+		}
+		log.Printf("fetchGroupMeta: resolved %s -> %q", groupID, name)
+		return groupMetaMsg{RelayURL: relayURL, GroupID: groupID, Name: name}
+	}
+}
+
+// groupReconnectDelayCmd waits briefly before signalling a group reconnection.
+func groupReconnectDelayCmd(gk string) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(5 * time.Second)
+		return groupReconnectMsg{groupKey: gk}
+	}
+}
+
+// parseGroupInput parses a NIP-29 group address from user input.
+// Accepts "naddr1..." or "host'groupid" format.
+// Returns relayURL, groupID, or an error.
+func parseGroupInput(input string) (string, string, error) {
+	if strings.HasPrefix(input, "naddr") {
+		prefix, data, err := nip19.Decode(input)
+		if err != nil {
+			return "", "", fmt.Errorf("invalid naddr: %w", err)
+		}
+		if prefix != "naddr" {
+			return "", "", fmt.Errorf("expected naddr, got %s", prefix)
+		}
+		ep := data.(nostr.EntityPointer)
+		if len(ep.Relays) == 0 {
+			return "", "", fmt.Errorf("naddr has no relay")
+		}
+		return ep.Relays[0], ep.Identifier, nil
+	}
+
+	// Try host'groupid format
+	ga, err := nip29.ParseGroupAddress(input)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid group address: %w", err)
+	}
+	return ga.Relay, ga.ID, nil
+}
+
+// pickPreviousTags selects up to 3 random IDs from the recent event list
+// and returns NIP-29 "previous" tags (first 8 chars of each ID).
+func pickPreviousTags(ids []string) nostr.Tags {
+	if len(ids) == 0 {
+		return nil
+	}
+	n := 3
+	if len(ids) < n {
+		n = len(ids)
+	}
+	// Fisher-Yates partial shuffle to pick n random entries.
+	picked := make([]string, len(ids))
+	copy(picked, ids)
+	for i := len(picked) - 1; i > 0 && i >= len(picked)-n; i-- {
+		jBig, err := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
+		if err != nil {
+			continue
+		}
+		j := int(jBig.Int64())
+		picked[i], picked[j] = picked[j], picked[i]
+	}
+	var tags nostr.Tags
+	for _, id := range picked[len(picked)-n:] {
+		ref := id
+		if len(ref) > 8 {
+			ref = ref[:8]
+		}
+		tags = append(tags, nostr.Tag{"previous", ref})
+	}
+	return tags
+}
+
+// groupCreatedMsg is returned after publishing a kind 9007 group creation event.
+type groupCreatedMsg struct {
+	RelayURL string
+	GroupID  string
+	Name     string
+}
+
+// groupInviteCreatedMsg is returned after publishing a kind 9009 invite event.
+type groupInviteCreatedMsg struct {
+	RelayURL string
+	GroupID  string
+	Code     string
+}
+
+// createGroupCmd publishes a kind 9007 event to create a NIP-29 group on a relay.
+func createGroupCmd(pool *nostr.SimplePool, relayURL, name string, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		// Generate random 8-hex-char group ID.
+		idBytes := make([]byte, 4)
+		if _, err := rand.Read(idBytes); err != nil {
+			return nostrErrMsg{fmt.Errorf("create group: random: %w", err)}
+		}
+		groupID := hex.EncodeToString(idBytes)
+
+		evt := nostr.Event{
+			Kind:      nostr.KindSimpleGroupCreateGroup,
+			CreatedAt: nostr.Now(),
+			Tags:      nostr.Tags{{"h", groupID}, {"name", name}},
+		}
+		if err := evt.Sign(keys.SK); err != nil {
+			return nostrErrMsg{fmt.Errorf("create group: sign: %w", err)}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r, err := pool.EnsureRelay(relayURL)
+		if err != nil {
+			return nostrErrMsg{fmt.Errorf("create group: connect %s: %w", relayURL, err)}
+		}
+		if err := r.Publish(ctx, evt); err != nil {
+			return nostrErrMsg{fmt.Errorf("create group: publish: %w", err)}
+		}
+
+		log.Printf("createGroupCmd: created ~%s (%s) on %s", name, groupID, relayURL)
+		return groupCreatedMsg{RelayURL: relayURL, GroupID: groupID, Name: name}
+	}
+}
+
+// deleteGroupEventCmd publishes a kind 9005 event to delete an event from a NIP-29 group.
+func deleteGroupEventCmd(pool *nostr.SimplePool, relayURL, groupID, eventID string, previousIDs []string, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		tags := nostr.Tags{{"h", groupID}, {"e", eventID}}
+		tags = append(tags, pickPreviousTags(previousIDs)...)
+
+		evt := nostr.Event{
+			Kind:      nostr.KindSimpleGroupDeleteEvent,
+			CreatedAt: nostr.Now(),
+			Tags:      tags,
+		}
+		if err := evt.Sign(keys.SK); err != nil {
+			return nostrErrMsg{fmt.Errorf("delete event: sign: %w", err)}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r, err := pool.EnsureRelay(relayURL)
+		if err != nil {
+			return nostrErrMsg{fmt.Errorf("delete event: connect %s: %w", relayURL, err)}
+		}
+		if err := r.Publish(ctx, evt); err != nil {
+			return nostrErrMsg{fmt.Errorf("delete event: publish: %w", err)}
+		}
+
+		log.Printf("deleteGroupEventCmd: deleted %s from group %s on %s", eventID, groupID, relayURL)
+		return nil
+	}
+}
+
+// createGroupInviteCmd publishes a kind 9009 event to create an invite for a NIP-29 group.
+func createGroupInviteCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs []string, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		tags := nostr.Tags{{"h", groupID}}
+		tags = append(tags, pickPreviousTags(previousIDs)...)
+
+		evt := nostr.Event{
+			Kind:      nostr.KindSimpleGroupCreateInvite,
+			CreatedAt: nostr.Now(),
+			Tags:      tags,
+		}
+		if err := evt.Sign(keys.SK); err != nil {
+			return nostrErrMsg{fmt.Errorf("create invite: sign: %w", err)}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r, err := pool.EnsureRelay(relayURL)
+		if err != nil {
+			return nostrErrMsg{fmt.Errorf("create invite: connect %s: %w", relayURL, err)}
+		}
+		if err := r.Publish(ctx, evt); err != nil {
+			return nostrErrMsg{fmt.Errorf("create invite: publish: %w", err)}
+		}
+
+		// The invite code is typically returned as the event content by the relay.
+		code := evt.Content
+		if code == "" {
+			code = evt.GetID()[:8]
+		}
+
+		log.Printf("createGroupInviteCmd: invite for group %s on %s: %s", groupID, relayURL, code)
+		return groupInviteCreatedMsg{RelayURL: relayURL, GroupID: groupID, Code: code}
+	}
+}
+
+// editGroupMetadataCmd publishes a kind 9002 event to edit group metadata.
+func editGroupMetadataCmd(pool *nostr.SimplePool, relayURL, groupID string, fields map[string]string, previousIDs []string, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		tags := nostr.Tags{{"h", groupID}}
+		for k, v := range fields {
+			tags = append(tags, nostr.Tag{k, v})
+		}
+		tags = append(tags, pickPreviousTags(previousIDs)...)
+
+		evt := nostr.Event{
+			Kind:      nostr.KindSimpleGroupEditMetadata,
+			CreatedAt: nostr.Now(),
+			Tags:      tags,
+		}
+		if err := evt.Sign(keys.SK); err != nil {
+			return nostrErrMsg{fmt.Errorf("edit metadata: sign: %w", err)}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		r, err := pool.EnsureRelay(relayURL)
+		if err != nil {
+			return nostrErrMsg{fmt.Errorf("edit metadata: connect %s: %w", relayURL, err)}
+		}
+		if err := r.Publish(ctx, evt); err != nil {
+			return nostrErrMsg{fmt.Errorf("edit metadata: publish: %w", err)}
+		}
+
+		// Return the new name for the UI to update.
+		name := fields["name"]
+		if name == "" {
+			name = groupID
+		}
+		log.Printf("editGroupMetadataCmd: updated metadata for group %s on %s", groupID, relayURL)
+		return groupMetaMsg{RelayURL: relayURL, GroupID: groupID, Name: name}
 	}
 }
 

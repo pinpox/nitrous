@@ -51,6 +51,13 @@ func main() {
 	}
 	log.Printf("rooms loaded: %d rooms", len(rooms))
 
+	groups, err := LoadSavedGroups(*configFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "groups error: %v\n", err)
+		os.Exit(1)
+	}
+	log.Printf("groups loaded: %d groups", len(groups))
+
 	contacts, err := LoadContacts(*configFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "contacts error: %v\n", err)
@@ -75,7 +82,7 @@ func main() {
 		return kr.SignEvent(ctx, ie.Event)
 	}))
 
-	m := newModel(cfg, *configFlag, keys, pool, kr, rooms, contacts, mdRender, mdStyle)
+	m := newModel(cfg, *configFlag, keys, pool, kr, rooms, groups, contacts, mdRender, mdStyle)
 
 	log.Println("starting TUI")
 	p := tea.NewProgram(&m, tea.WithAltScreen())

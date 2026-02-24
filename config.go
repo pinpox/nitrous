@@ -280,6 +280,125 @@ func RemoveContact(cfgFlagPath string, pubkey string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
 
+// SavedGroup maps a display name to a relay URL and group ID (NIP-29).
+type SavedGroup struct {
+	Name     string
+	RelayURL string
+	GroupID  string
+}
+
+// groupsPath returns the path to the groups file, in the same directory as the config.
+func groupsPath(cfgFlagPath string) string {
+	dir := filepath.Dir(configPath(cfgFlagPath))
+	return filepath.Join(dir, "groups")
+}
+
+// LoadSavedGroups reads the groups file. Each line is "name relay_url group_id".
+// Returns an empty slice if the file doesn't exist.
+func LoadSavedGroups(cfgFlagPath string) ([]SavedGroup, error) {
+	path := groupsPath(cfgFlagPath)
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	var groups []SavedGroup
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		name := strings.TrimSpace(parts[0])
+		relayURL := strings.TrimSpace(parts[1])
+		groupID := strings.TrimSpace(parts[2])
+		if name != "" && relayURL != "" && groupID != "" {
+			groups = append(groups, SavedGroup{Name: name, RelayURL: relayURL, GroupID: groupID})
+		}
+	}
+	return groups, scanner.Err()
+}
+
+// AppendSavedGroup adds a group to the groups file if not already present.
+func AppendSavedGroup(cfgFlagPath string, group SavedGroup) error {
+	existing, _ := LoadSavedGroups(cfgFlagPath)
+	for _, g := range existing {
+		if g.RelayURL == group.RelayURL && g.GroupID == group.GroupID {
+			return nil
+		}
+	}
+
+	path := groupsPath(cfgFlagPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%s %s %s\n", group.Name, group.RelayURL, group.GroupID)
+	return err
+}
+
+// RemoveSavedGroup removes a group by relay URL and group ID from the groups file.
+func RemoveSavedGroup(cfgFlagPath string, relayURL, groupID string) error {
+	groups, err := LoadSavedGroups(cfgFlagPath)
+	if err != nil {
+		return err
+	}
+	var kept []SavedGroup
+	for _, g := range groups {
+		if !(g.RelayURL == relayURL && g.GroupID == groupID) {
+			kept = append(kept, g)
+		}
+	}
+	if len(kept) == len(groups) {
+		return nil
+	}
+	path := groupsPath(cfgFlagPath)
+	var lines []string
+	for _, g := range kept {
+		lines = append(lines, fmt.Sprintf("%s %s %s", g.Name, g.RelayURL, g.GroupID))
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}
+
+// UpdateSavedGroupName rewrites the group's name in the groups file.
+func UpdateSavedGroupName(cfgFlagPath string, relayURL, groupID, newName string) error {
+	groups, err := LoadSavedGroups(cfgFlagPath)
+	if err != nil || len(groups) == 0 {
+		return err
+	}
+
+	changed := false
+	for i, g := range groups {
+		if g.RelayURL == relayURL && g.GroupID == groupID && g.Name != newName {
+			groups[i].Name = newName
+			changed = true
+			break
+		}
+	}
+	if !changed {
+		return nil
+	}
+
+	path := groupsPath(cfgFlagPath)
+	var lines []string
+	for _, g := range groups {
+		lines = append(lines, fmt.Sprintf("%s %s %s", g.Name, g.RelayURL, g.GroupID))
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}
+
 // UpdateContactName rewrites the contact's name in the contacts file.
 // No-op if the pubkey is not in the file or the name is unchanged.
 func UpdateContactName(cfgFlagPath string, pubkey, newName string) error {

@@ -2,7 +2,22 @@
 
 A terminal chat client for [Nostr](https://nostr.com), built with
 [Bubbletea](https://github.com/charmbracelet/bubbletea). Supports NIP-28
-public channels and NIP-17 encrypted direct messages.
+public channels, NIP-29 relay-based groups, and NIP-17 encrypted direct
+messages.
+
+## Supported NIPs
+
+| NIP | Description |
+|-----|-------------|
+| NIP-01 | Profile metadata (kind 0) |
+| NIP-17 | Private Direct Messages (gift wrap) |
+| NIP-19 | bech32 entities (npub, nsec, nevent, naddr) |
+| NIP-28 | Public Channels (kind 40/42) |
+| NIP-29 | Relay-based Groups (kind 9, join/leave) |
+| NIP-42 | Client authentication |
+| NIP-44 | Versioned encryption |
+| NIP-59 | Gift Wrap |
+| NIP-65 | Relay List Metadata |
 
 ## Setup
 
@@ -57,6 +72,7 @@ All data files live alongside the config file (default: `~/.config/nitrous/`).
 |------|--------|-------------|
 | `config.toml` | TOML | Main configuration |
 | `rooms` | `name event_id` per line | Saved channels |
+| `groups` | `name relay_url group_id` per line | Saved NIP-29 groups |
 | `contacts` | `name hex_pubkey` per line | Saved DM contacts |
 
 ## Key bindings
@@ -64,8 +80,8 @@ All data files live alongside the config file (default: `~/.config/nitrous/`).
 | Key | Action |
 |-----|--------|
 | `Enter` | Send message |
-| `Ctrl+Up` | Previous channel/DM |
-| `Ctrl+Down` | Next channel/DM |
+| `Ctrl+Up` | Previous channel/group/DM |
+| `Ctrl+Down` | Next channel/group/DM |
 | `PgUp` | Scroll up |
 | `PgDn` | Scroll down |
 | `Ctrl+C` | Quit |
@@ -77,8 +93,10 @@ All data files live alongside the config file (default: `~/.config/nitrous/`).
 | `/create #name` | Create a new channel |
 | `/join #name` | Join a channel from your rooms file |
 | `/join <event-id>` | Join a channel by event ID |
+| `/join naddr1...` | Join a NIP-29 relay-based group |
+| `/join host'groupid` | Join a NIP-29 group by address |
 | `/dm <npub>` | Open a DM conversation |
-| `/leave` | Leave the current channel or DM |
+| `/leave` | Leave the current channel, group, or DM |
 | `/me` | Show QR code of your npub |
-| `/room` | Show QR code of the current channel |
+| `/room` | Show QR code of the current channel or group |
 | `/help` | Show command help |
