@@ -22,9 +22,7 @@ type ProfileConfig struct {
 
 type Config struct {
 	Relays      []string      `toml:"relays"`
-	DisplayName string        `toml:"display_name"`
 	MaxMessages int           `toml:"max_messages"`
-	Bookmarks   []string      `toml:"bookmarks"`
 	Profile     ProfileConfig `toml:"profile"`
 }
 
@@ -37,9 +35,10 @@ type Room struct {
 func defaultConfig() Config {
 	return Config{
 		Relays: []string{
-			"wss://nostr.0cx.de",
+			"wss://relay.damus.io",
+			"wss://relay.nostr.band",
+			"wss://nos.lol",
 		},
-		DisplayName: "anon",
 		MaxMessages: 500,
 	}
 }
@@ -79,11 +78,6 @@ func LoadConfig(flagPath string) (Config, error) {
 	}
 	if len(cfg.Relays) == 0 {
 		cfg.Relays = defaultConfig().Relays
-	}
-
-	// Backward compat: copy top-level display_name into profile if not set.
-	if cfg.Profile.DisplayName == "" && cfg.DisplayName != "" {
-		cfg.Profile.DisplayName = cfg.DisplayName
 	}
 
 	return cfg, nil

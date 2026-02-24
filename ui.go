@@ -55,18 +55,12 @@ const (
 	sidebarBorder     = 1 // right border on sidebar
 	inputMinHeight    = 1
 	inputMaxHeight    = 8
-	headerHeight      = 1 // top header bar
 	contentTitleHeight = 1 // channel/DM name above viewport
 	statusHeight      = 1 // bottom status bar
 )
 
 // Styles
 var (
-	headerStyle = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(colorPrimary).
-		Padding(0, 1)
-
 	sidebarStyle = lipgloss.NewStyle().
 		BorderRight(true).
 		BorderStyle(lipgloss.NormalBorder()).

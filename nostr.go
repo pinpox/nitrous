@@ -9,6 +9,8 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -226,26 +228,27 @@ func subscribeDMCmd(pool *nostr.SimplePool, relays []string, kr nostr.Keyer, sin
 		}
 		log.Printf("subscribeDMCmd: listening for kind 1059 gift wraps to %s since %d (adjusted from %d)", shortPK(pk), adjustedSince, since)
 
-		// Pre-authenticate with each relay via NIP-42. The relay sends an AUTH
-		// challenge on connect; r.Auth() reads it from the WebSocket and responds.
-		// The relay-side auth succeeds even when r.Auth() reports a timeout on the
-		// client side, so we ignore errors. Without this, SubscribeMany sends the
-		// REQ before auth completes and the relay withholds DM events.
+		// Pre-authenticate with each relay via NIP-42 in the background.
+		// Some relays send an AUTH challenge on connect; r.Auth() reads it and responds.
+		// We don't wait for completion — the subscription starts immediately and the
+		// pool's WithAuthHandler handles any late AUTH challenges reactively.
 		for _, url := range relays {
-			r, err := pool.EnsureRelay(url)
-			if err != nil {
-				log.Printf("subscribeDMCmd: failed to connect to %s: %v", url, err)
-				continue
-			}
-			time.Sleep(500 * time.Millisecond)
-			authCtx, authCancel := context.WithTimeout(ctx, 3*time.Second)
-			err = r.Auth(authCtx, func(ae *nostr.Event) error { return kr.SignEvent(authCtx, ae) })
-			authCancel()
-			if err != nil {
-				log.Printf("subscribeDMCmd: NIP-42 auth on %s returned: %v (may still succeed relay-side)", url, err)
-			} else {
-				log.Printf("subscribeDMCmd: NIP-42 auth succeeded on %s", url)
-			}
+			go func(url string) {
+				r, err := pool.EnsureRelay(url)
+				if err != nil {
+					log.Printf("subscribeDMCmd: failed to connect to %s: %v", url, err)
+					return
+				}
+				time.Sleep(500 * time.Millisecond)
+				authCtx, authCancel := context.WithTimeout(ctx, 3*time.Second)
+				err = r.Auth(authCtx, func(ae *nostr.Event) error { return kr.SignEvent(authCtx, ae) })
+				authCancel()
+				if err != nil {
+					log.Printf("subscribeDMCmd: NIP-42 auth on %s returned: %v (may still succeed relay-side)", url, err)
+				} else {
+					log.Printf("subscribeDMCmd: NIP-42 auth succeeded on %s", url)
+				}
+			}(url)
 		}
 
 		ch := make(chan nostr.Event)
@@ -369,15 +372,68 @@ func waitForDMEvent(events <-chan nostr.Event, keys Keys) tea.Cmd {
 // Returns a dmEventMsg with the plaintext so it appears locally.
 func sendDM(pool *nostr.SimplePool, relays []string, recipientPK string, content string, keys Keys, kr nostr.Keyer) tea.Cmd {
 	return func() tea.Msg {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
 		theirRelays := nip17.GetDMRelays(ctx, recipientPK, pool, relays)
 		if len(theirRelays) == 0 {
 			theirRelays = relays // fallback to our relays
 		}
 
-		err := nip17.PublishMessage(ctx, content, nil, pool, relays, theirRelays, kr, recipientPK, nil)
+		toUs, toThem, err := nip17.PrepareMessage(ctx, content, nil, kr, recipientPK, nil)
 		if err != nil {
-			return nostrErrMsg{fmt.Errorf("send DM: %w", err)}
+			return nostrErrMsg{fmt.Errorf("send DM: prepare: %w", err)}
+		}
+
+		// Publish to all relays concurrently. A dead relay won't block the rest.
+		var wg sync.WaitGroup
+		var sentToUs, sentToThem atomic.Bool
+
+		// "to us" copy → our relays
+		for _, url := range relays {
+			wg.Add(1)
+			go func(url string) {
+				defer wg.Done()
+				r, err := pool.EnsureRelay(url)
+				if err != nil {
+					log.Printf("sendDM: connect %s: %v", url, err)
+					return
+				}
+				if err := r.Publish(ctx, toUs); err != nil {
+					log.Printf("sendDM: publish toUs to %s: %v", url, err)
+					return
+				}
+				sentToUs.Store(true)
+				log.Printf("sendDM: published toUs to %s", url)
+			}(url)
+		}
+
+		// "to them" copy → their relays
+		for _, url := range theirRelays {
+			wg.Add(1)
+			go func(url string) {
+				defer wg.Done()
+				r, err := pool.EnsureRelay(url)
+				if err != nil {
+					log.Printf("sendDM: connect %s: %v", url, err)
+					return
+				}
+				if err := r.Publish(ctx, toThem); err != nil {
+					log.Printf("sendDM: publish toThem to %s: %v", url, err)
+					return
+				}
+				sentToThem.Store(true)
+				log.Printf("sendDM: published toThem to %s", url)
+			}(url)
+		}
+
+		wg.Wait()
+
+		if !sentToUs.Load() && !sentToThem.Load() {
+			return nostrErrMsg{fmt.Errorf("send DM: failed to publish to any relay")}
+		}
+		if !sentToThem.Load() {
+			log.Printf("sendDM: warning: could not deliver to recipient's relays %v", theirRelays)
 		}
 
 		ts := nostr.Now()

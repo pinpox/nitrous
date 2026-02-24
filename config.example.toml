@@ -1,12 +1,10 @@
 relays = [
-  "wss://nostr.0cx.de",
+  "wss://relay.damus.io",
+  "wss://relay.nostr.band",
+  "wss://nos.lol",
 ]
 
-display_name = "anon"
 max_messages = 500
-
-# Channels to auto-join on startup (kind-40 event IDs)
-bookmarks = []
 
 # Your Nostr profile (NIP-01 kind 0), published to relays on startup.
 [profile]

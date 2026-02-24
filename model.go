@@ -147,8 +147,6 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		ownName = cfg.Profile.DisplayName
 	} else if cfg.Profile.Name != "" {
 		ownName = cfg.Profile.Name
-	} else if cfg.DisplayName != "" {
-		ownName = cfg.DisplayName
 	}
 
 	profiles := map[string]string{keys.PK: ownName}
@@ -802,7 +800,7 @@ func (m *model) sidebarWidth() int {
 
 func (m *model) updateLayout() {
 	contentWidth := m.width - m.sidebarWidth() - sidebarBorder
-	contentHeight := m.height - headerHeight - contentTitleHeight - statusHeight - m.lastInputHeight
+	contentHeight := m.height - contentTitleHeight - statusHeight - m.lastInputHeight
 
 	if contentWidth < 10 {
 		contentWidth = 10
@@ -907,27 +905,17 @@ func (m *model) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.qrOverlay)
 	}
 
-	header := m.viewHeader()
 	sidebar := m.viewSidebar()
 	content := m.viewContent()
 	statusBar := m.viewStatusBar()
 
 	mainArea := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, mainArea, statusBar)
-}
-
-func (m *model) viewHeader() string {
-	title := headerStyle.Render("nitrous")
-	gap := m.width - lipgloss.Width(title)
-	if gap < 0 {
-		gap = 0
-	}
-	return title + strings.Repeat(" ", gap)
+	return lipgloss.JoinVertical(lipgloss.Left, mainArea, statusBar)
 }
 
 func (m *model) viewSidebar() string {
-	contentHeight := m.height - headerHeight - statusHeight
+	contentHeight := m.height - statusHeight
 	sw := m.sidebarWidth()
 	var items []string
 
@@ -966,7 +954,7 @@ func (m *model) viewSidebar() string {
 }
 
 func (m *model) viewContent() string {
-	totalHeight := m.height - headerHeight - statusHeight
+	totalHeight := m.height - statusHeight
 
 	var title string
 	if m.isChannelSelected() && len(m.channels) > 0 {
@@ -975,7 +963,7 @@ func (m *model) viewContent() string {
 		title = "@" + m.resolveAuthor(m.dmPeers[m.activeDMPeerIdx()])
 	}
 
-	titleBar := headerStyle.Render(title)
+	titleBar := lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Padding(0, 1).Render(title)
 	inputView := m.input.View()
 	vp := m.viewport.View()
 
