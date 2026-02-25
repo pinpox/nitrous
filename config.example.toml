@@ -7,6 +7,10 @@ relays = [
 # Default relay for /group create (optional, can be overridden per command).
 # group_relay = "wss://groups.0xchat.com"
 
+# Path to a file containing your private key (nsec or hex).
+# Falls back to NOSTR_PRIVATE_KEY env var if not set.
+private_key_file = "~/.config/nitrous/nsec"
+
 max_messages = 500
 
 # Your Nostr profile (NIP-01 kind 0), published to relays on startup.

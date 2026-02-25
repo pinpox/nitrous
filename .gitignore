@@ -6,3 +6,5 @@ debug.log
 contacts
 groups
 config.toml
+nsec
+vendor/

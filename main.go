@@ -37,7 +37,7 @@ func main() {
 	}
 	log.Printf("config loaded: %d relays", len(cfg.Relays))
 
-	keys, err := loadKeys()
+	keys, err := loadKeys(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "key error: %v\n", err)
 		os.Exit(1)

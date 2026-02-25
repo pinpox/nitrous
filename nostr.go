@@ -10,6 +10,7 @@ import (
 	"log"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -93,11 +94,29 @@ type profileResolvedMsg struct {
 
 func (e nostrErrMsg) Error() string { return e.err.Error() }
 
-// loadKeys reads the private key from the environment and derives the public key.
-func loadKeys() (Keys, error) {
-	raw := os.Getenv("NOSTR_PRIVATE_KEY")
+// loadKeys reads the private key from a file (if configured) or the
+// NOSTR_PRIVATE_KEY environment variable, and derives the public key.
+func loadKeys(cfg Config) (Keys, error) {
+	var raw string
+	if cfg.PrivateKeyFile != "" {
+		path := cfg.PrivateKeyFile
+		// Expand ~ to home directory.
+		if strings.HasPrefix(path, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				path = filepath.Join(home, path[2:])
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return Keys{}, fmt.Errorf("failed to read private_key_file %q: %w", path, err)
+		}
+		raw = strings.TrimSpace(string(data))
+	}
 	if raw == "" {
-		return Keys{}, fmt.Errorf("NOSTR_PRIVATE_KEY environment variable not set")
+		raw = os.Getenv("NOSTR_PRIVATE_KEY")
+	}
+	if raw == "" {
+		return Keys{}, fmt.Errorf("no private key: set private_key_file in config or NOSTR_PRIVATE_KEY env var")
 	}
 
 	sk := raw
