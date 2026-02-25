@@ -83,6 +83,10 @@ type model struct {
 	seenEvents   map[string]bool
 	localDMEchoes map[string]bool // "peer:content" keys for sent DMs awaiting relay echo
 
+	// Unread indicators (keyed by channel ID, group key, or DM peer pubkey)
+	unread        map[string]bool
+	dmSeenAtStart nostr.Timestamp // lastDMSeen at startup, to suppress unread for replayed messages
+
 	// Profile resolution (NIP-01 kind 0)
 	profiles       map[string]string // pubkey -> display name
 	profilePending map[string]bool   // pubkeys with in-flight fetches
@@ -93,6 +97,7 @@ type model struct {
 	// Autocomplete
 	acSuggestions []string
 	acIndex       int
+	acMention     bool // true when completing an @mention (vs slash command)
 
 	// Input history
 	inputHistory []string // sent messages, newest last
@@ -256,7 +261,9 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		dmMsgs:         make(map[string][]ChatMessage),
 		dmPeers:        dmPeers,
 		lastDMSeen:     LoadLastDMSeen(cfgFlagPath),
+		dmSeenAtStart:  LoadLastDMSeen(cfgFlagPath),
 		seenEvents:     make(map[string]bool),
+		unread:         make(map[string]bool),
 		localDMEchoes:  make(map[string]bool),
 		profiles:       profiles,
 		profilePending: make(map[string]bool),
@@ -325,6 +332,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.MouseButtonWheelDown:
 			m.viewport.ScrollDown(3)
+			return m, nil
+		case tea.MouseButtonLeft:
+			if msg.Action == tea.MouseActionPress && msg.X < m.sidebarWidth() {
+				if idx, ok := m.sidebarItemAt(msg.Y); ok {
+					prev := m.activeItem
+					m.activeItem = idx
+					m.updateViewport()
+					return m, m.subscribeIfNeeded(prev)
+				}
+			}
 			return m, nil
 		}
 		return m, nil
@@ -397,6 +414,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.channelMsgs[chID] = appendMessage(m.channelMsgs[chID], cm, m.cfg.MaxMessages)
 		if chID == m.activeChannelID() {
 			m.updateViewport()
+		} else {
+			m.unread[chID] = true
 		}
 		var batchCmds []tea.Cmd
 		if profileCmd := m.maybeRequestProfile(cm.PubKey); profileCmd != nil {
@@ -448,8 +467,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				log.Printf("dmEventMsg: failed to save last DM seen: %v", err)
 			}
 		}
-		if m.isDMSelected() {
+		if m.isDMSelected() && peer == m.activeDMPeerPK() {
 			m.updateViewport()
+		} else if cm.Timestamp > m.dmSeenAtStart {
+			m.unread[peer] = true
 		}
 		var batchCmds []tea.Cmd
 		if profileCmd := m.maybeRequestProfile(peer); profileCmd != nil {
@@ -524,6 +545,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.groupMsgs[gk] = appendMessage(m.groupMsgs[gk], cm, m.cfg.MaxMessages)
 		if gk == m.activeGroupKey() {
 			m.updateViewport()
+		} else {
+			m.unread[gk] = true
 		}
 		var batchCmds []tea.Cmd
 		if profileCmd := m.maybeRequestProfile(cm.PubKey); profileCmd != nil {
@@ -848,6 +871,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // the current input value.
 func (m *model) updateSuggestions() {
 	text := m.input.Value()
+
+	// Check for @mention anywhere in the input.
+	if suggestions := m.mentionSuggestions(text); len(suggestions) > 0 {
+		if !slicesEqual(suggestions, m.acSuggestions) {
+			m.acIndex = 0
+		}
+		m.acSuggestions = suggestions
+		m.acMention = true
+		return
+	}
+
+	m.acMention = false
+
 	if !strings.HasPrefix(text, "/") {
 		m.acSuggestions = nil
 		m.acIndex = 0
@@ -981,19 +1017,29 @@ func (m *model) acceptSuggestion() {
 
 	selected := m.acSuggestions[m.acIndex]
 	text := m.input.Value()
-	tokens := strings.Fields(text)
 
 	var newText string
-	if len(tokens) == 1 && strings.HasPrefix(selected, "/") {
-		// Completing the command itself: replace entire text.
-		newText = selected + " "
-	} else {
-		// Completing a subcommand or argument: replace from last space.
-		lastSpace := strings.LastIndex(text, " ")
-		if lastSpace >= 0 {
-			newText = text[:lastSpace+1] + selected + " "
+	if m.acMention {
+		// @mention: find the last @ and replace from there.
+		atPos := strings.LastIndex(text, "@")
+		if atPos >= 0 {
+			newText = text[:atPos] + "@" + selected + " "
 		} else {
+			newText = "@" + selected + " "
+		}
+	} else {
+		tokens := strings.Fields(text)
+		if len(tokens) == 1 && strings.HasPrefix(selected, "/") {
+			// Completing the command itself: replace entire text.
 			newText = selected + " "
+		} else {
+			// Completing a subcommand or argument: replace from last space.
+			lastSpace := strings.LastIndex(text, " ")
+			if lastSpace >= 0 {
+				newText = text[:lastSpace+1] + selected + " "
+			} else {
+				newText = selected + " "
+			}
 		}
 	}
 
@@ -1055,6 +1101,67 @@ func (m *model) viewAutocomplete() string {
 }
 
 // slicesEqual reports whether two string slices have equal contents.
+// mentionSuggestions returns @username suggestions if the last word in text
+// starts with @. Returns nil if no @ mention is being typed.
+func (m *model) mentionSuggestions(text string) []string {
+	// Find the last word boundary.
+	lastSpace := strings.LastIndex(text, " ")
+	var word string
+	if lastSpace >= 0 {
+		word = text[lastSpace+1:]
+	} else {
+		word = text
+	}
+
+	if !strings.HasPrefix(word, "@") || len(word) < 1 {
+		return nil
+	}
+
+	partial := strings.ToLower(strings.TrimPrefix(word, "@"))
+
+	// Collect unique authors from current chat messages.
+	authors := m.currentChatAuthors()
+
+	var suggestions []string
+	for _, pk := range authors {
+		if pk == m.keys.PK {
+			continue // skip self
+		}
+		name := m.resolveAuthor(pk)
+		if partial == "" || (strings.HasPrefix(strings.ToLower(name), partial) && !strings.EqualFold(name, partial)) {
+			suggestions = append(suggestions, name)
+		}
+	}
+	return suggestions
+}
+
+// currentChatAuthors returns deduplicated pubkeys of message authors in the
+// current chat, ordered by most recent message first.
+func (m *model) currentChatAuthors() []string {
+	var msgs []ChatMessage
+	if m.isChannelSelected() && len(m.channels) > 0 {
+		msgs = m.channelMsgs[m.activeChannelID()]
+	} else if m.isGroupSelected() && len(m.groups) > 0 {
+		msgs = m.groupMsgs[m.activeGroupKey()]
+	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
+		msgs = m.dmMsgs[m.activeDMPeerPK()]
+	} else {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var authors []string
+	for i := len(msgs) - 1; i >= 0; i-- {
+		pk := msgs[i].PubKey
+		if pk == "" || msgs[i].Author == "system" || seen[pk] {
+			continue
+		}
+		seen[pk] = true
+		authors = append(authors, pk)
+	}
+	return authors
+}
+
 // extractInviteAddresses scans messages in the current chat for group invite
 // links in host'groupid format and returns them (most recent first, deduped).
 func (m *model) extractInviteAddresses() []string {
@@ -1694,6 +1801,49 @@ func (m *model) syncInputHeight() {
 
 // sidebarWidth returns the width needed for the sidebar based on the longest
 // channel name, group name, or DM peer display name.
+// clearUnread removes the unread indicator for the currently active item.
+func (m *model) clearUnread() {
+	if m.isChannelSelected() && len(m.channels) > 0 {
+		delete(m.unread, m.activeChannelID())
+	} else if m.isGroupSelected() && len(m.groups) > 0 {
+		delete(m.unread, m.activeGroupKey())
+	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
+		delete(m.unread, m.activeDMPeerPK())
+	}
+}
+
+// sidebarItemAt maps a Y coordinate to a sidebar item index.
+// Returns the unified activeItem index and true if the row is a clickable item,
+// or 0 and false if it's a section header or out of bounds.
+func (m *model) sidebarItemAt(y int) (int, bool) {
+	row := 0
+	// CHANNELS header
+	row++ // "CHANNELS"
+	for i := range m.channels {
+		if y == row {
+			return i, true
+		}
+		row++
+	}
+	// GROUPS header
+	row++ // "GROUPS"
+	for i := range m.groups {
+		if y == row {
+			return len(m.channels) + i, true
+		}
+		row++
+	}
+	// DMS header
+	row++ // "DMS"
+	for i := range m.dmPeers {
+		if y == row {
+			return len(m.channels) + len(m.groups) + i, true
+		}
+		row++
+	}
+	return 0, false
+}
+
 func (m *model) sidebarWidth() int {
 	longest := 0
 	for _, ch := range m.channels {
@@ -1760,6 +1910,7 @@ func (m *model) updateLayout() {
 }
 
 func (m *model) updateViewport() {
+	m.clearUnread()
 	var msgs []ChatMessage
 	if m.isChannelSelected() && len(m.channels) > 0 {
 		chID := m.activeChannelID()
@@ -1875,6 +2026,8 @@ func (m *model) viewSidebar() string {
 		}
 		if i == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))
+		} else if m.unread[ch.ID] {
+			items = append(items, sidebarUnreadStyle.Render(name))
 		} else {
 			items = append(items, sidebarItemStyle.Render(name))
 		}
@@ -1888,8 +2041,11 @@ func (m *model) viewSidebar() string {
 			name = name[:sw-2]
 		}
 		idx := len(m.channels) + i
+		gk := groupKey(g.RelayURL, g.GroupID)
 		if idx == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))
+		} else if m.unread[gk] {
+			items = append(items, sidebarUnreadStyle.Render(name))
 		} else {
 			items = append(items, sidebarItemStyle.Render(name))
 		}
@@ -1905,6 +2061,8 @@ func (m *model) viewSidebar() string {
 		idx := len(m.channels) + len(m.groups) + i
 		if idx == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))
+		} else if m.unread[peer] {
+			items = append(items, sidebarUnreadStyle.Render(name))
 		} else {
 			items = append(items, sidebarItemStyle.Render(name))
 		}

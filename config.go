@@ -81,6 +81,12 @@ func LoadConfig(flagPath string) (Config, error) {
 	if len(cfg.Relays) == 0 {
 		cfg.Relays = defaultConfig().Relays
 	}
+	if cfg.Profile.Name == "" {
+		cfg.Profile.Name = os.Getenv("USER")
+	}
+	if cfg.Profile.DisplayName == "" {
+		cfg.Profile.DisplayName = os.Getenv("USER")
+	}
 
 	return cfg, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +16,9 @@ import (
 	"github.com/nbd-wtf/go-nostr/keyer"
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
+
+//go:embed config.example.toml
+var defaultConfigContent string
 
 func main() {
 	configFlag := flag.String("config", "", "path to config file")
@@ -31,6 +35,11 @@ func main() {
 		log.Println("debug logging enabled")
 	} else {
 		log.SetOutput(io.Discard)
+	}
+
+	cfgPath := configPath(*configFlag)
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		initFirstRun(cfgPath)
 	}
 
 	cfg, err := LoadConfig(*configFlag)
@@ -100,6 +109,49 @@ func main() {
 	}
 
 	pool.Close("shutdown")
+}
+
+func initFirstRun(cfgPath string) {
+	dir := filepath.Dir(cfgPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating config directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Generate keypair.
+	sk := nostr.GeneratePrivateKey()
+	pk, err := nostr.GetPublicKey(sk)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error deriving public key: %v\n", err)
+		os.Exit(1)
+	}
+	nsec, err := nip19.EncodePrivateKey(sk)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error encoding nsec: %v\n", err)
+		os.Exit(1)
+	}
+	npub, err := nip19.EncodePublicKey(pk)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error encoding npub: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write key file.
+	keyPath := filepath.Join(dir, "nsec")
+	if err := os.WriteFile(keyPath, []byte(nsec+"\n"), 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing key file: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Generated new keypair:\n")
+	fmt.Printf("  nsec: %s\n", nsec)
+	fmt.Printf("  npub: %s\n", npub)
+	fmt.Printf("  file: %s\n", keyPath)
+
+	// Write default config from embedded config.example.toml.
+	if err := os.WriteFile(cfgPath, []byte(defaultConfigContent), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runKeygen(cfg Config) {

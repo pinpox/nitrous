@@ -15,7 +15,7 @@ max_messages = 500
 
 # Your Nostr profile (NIP-01 kind 0), published to relays on startup.
 [profile]
-name = "anon"
-display_name = "Anonymous User"
+# name = ""
+# display_name = ""
 about = ""
 # picture = "https://example.com/avatar.png"

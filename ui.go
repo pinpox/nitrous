@@ -68,6 +68,11 @@ var (
 		Foreground(colorWhite).
 		Padding(0, 1)
 
+	sidebarUnreadStyle = lipgloss.NewStyle().
+		Foreground(colorWhite).
+		Bold(true).
+		Padding(0, 1)
+
 	sidebarSelectedStyle = lipgloss.NewStyle().
 		Foreground(colorHighlight).
 		Background(colorSecondary).
