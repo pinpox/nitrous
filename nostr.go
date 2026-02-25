@@ -1040,31 +1040,11 @@ func createGroupInviteCmd(pool *nostr.SimplePool, relayURL, groupID string, prev
 	}
 }
 
-// inviteDMCmd fetches the group's kind 39000 metadata to get the relay pubkey,
-// encodes a proper naddr, and sends a DM with the invite link.
+// inviteDMCmd sends a DM with a group invite in host'groupid format.
 func inviteDMCmd(pool *nostr.SimplePool, relays []string, relayURL, groupID, groupName, recipientPK string, keys Keys, kr nostr.Keyer) tea.Cmd {
 	return func() tea.Msg {
-		// Fetch the kind 39000 event to get the relay's pubkey for the naddr.
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		author := keys.PK // fallback
-		re := pool.QuerySingle(ctx, []string{relayURL}, nostr.Filter{
-			Kinds: []int{nostr.KindSimpleGroupMetadata},
-			Tags:  nostr.TagMap{"d": {groupID}},
-		})
-		if re != nil && re.PubKey != "" {
-			author = re.PubKey
-		}
-
-		naddr, err := nip19.EncodeEntity(author, nostr.KindSimpleGroupMetadata, groupID, []string{relayURL})
-		if err != nil {
-			return nostrErrMsg{fmt.Errorf("invite: encode naddr: %w", err)}
-		}
-
-		// Strip wss:// prefix for the host'groupid format.
 		host := strings.TrimPrefix(relayURL, "wss://")
-		dmText := fmt.Sprintf("You've been invited to ~%s\n\nnostr:%s\n\n%s'%s", groupName, naddr, host, groupID)
+		dmText := fmt.Sprintf("You've been invited to ~%s\n\n%s'%s", groupName, host, groupID)
 		// Reuse sendDM logic inline — call the returned Cmd directly.
 		return sendDM(pool, relays, recipientPK, dmText, keys, kr)()
 	}

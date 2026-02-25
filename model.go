@@ -629,7 +629,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case groupInviteCreatedMsg:
 		log.Printf("groupInviteCreatedMsg: relay=%s group=%s code=%s", msg.RelayURL, msg.GroupID, msg.Code)
-		m.addSystemMsg(fmt.Sprintf("invite code: %s", msg.Code))
+		host := strings.TrimPrefix(msg.RelayURL, "wss://")
+		m.addSystemMsg(fmt.Sprintf("invite code: %s  join with: /join %s'%s", msg.Code, host, msg.GroupID))
 		return m, nil
 
 	case groupJoinedMsg:
@@ -1188,9 +1189,15 @@ func (m *model) extractInviteAddresses() []string {
 	var addrs []string
 	// Walk newest first so the most recent invite appears first.
 	for i := len(msgs) - 1; i >= 0; i-- {
-		for _, word := range strings.Fields(msgs[i].Content) {
-			// Match host'groupid pattern (e.g. groups.fiatjaf.com'mygroup).
-			if strings.Contains(word, "'") && !strings.HasPrefix(word, "'") && !strings.HasSuffix(word, "'") {
+		for _, line := range strings.Split(msgs[i].Content, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			word := fields[0]
+			// Match host'groupid pattern (e.g. groups.0xchat.com'2d0fe936).
+			// Only match if it's the first word on a line and the host part looks like a domain.
+			if parts := strings.SplitN(word, "'", 2); len(parts) == 2 && strings.Contains(parts[0], ".") && parts[1] != "" {
 				if !seen[word] {
 					seen[word] = true
 					addrs = append(addrs, word)
