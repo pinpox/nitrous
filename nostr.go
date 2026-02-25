@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -1133,6 +1134,60 @@ func editGroupMetadataCmd(pool *nostr.SimplePool, relayURL, groupID string, fiel
 		}
 		log.Printf("editGroupMetadataCmd: updated metadata for group %s on %s", groupID, relayURL)
 		return groupMetaMsg{RelayURL: relayURL, GroupID: groupID, Name: name}
+	}
+}
+
+// nip05ResolvedMsg is sent when a NIP-05 identifier lookup completes.
+type nip05ResolvedMsg struct {
+	Identifier string // original input e.g. "alice@example.com"
+	PubKey     string // resolved hex pubkey, empty on failure
+	Err        error
+}
+
+// resolveNIP05Cmd resolves a NIP-05 internet identifier to a hex pubkey.
+func resolveNIP05Cmd(identifier string) tea.Cmd {
+	return func() tea.Msg {
+		parts := strings.SplitN(identifier, "@", 2)
+		if len(parts) != 2 {
+			return nip05ResolvedMsg{Identifier: identifier, Err: fmt.Errorf("invalid NIP-05 identifier: %s", identifier)}
+		}
+		name, domain := parts[0], parts[1]
+
+		url := fmt.Sprintf("https://%s/.well-known/nostr.json?name=%s", domain, name)
+		log.Printf("resolveNIP05: fetching %s", url)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return nip05ResolvedMsg{Identifier: identifier, Err: err}
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nip05ResolvedMsg{Identifier: identifier, Err: err}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != 200 {
+			return nip05ResolvedMsg{Identifier: identifier, Err: fmt.Errorf("HTTP %d from %s", resp.StatusCode, domain)}
+		}
+
+		var result struct {
+			Names map[string]string `json:"names"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nip05ResolvedMsg{Identifier: identifier, Err: fmt.Errorf("bad JSON from %s: %v", domain, err)}
+		}
+
+		pk, ok := result.Names[name]
+		if !ok {
+			return nip05ResolvedMsg{Identifier: identifier, Err: fmt.Errorf("name %q not found on %s", name, domain)}
+		}
+
+		log.Printf("resolveNIP05: %s -> %s", identifier, shortPK(pk))
+		return nip05ResolvedMsg{Identifier: identifier, PubKey: pk}
 	}
 }
 

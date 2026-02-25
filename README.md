@@ -7,17 +7,17 @@ messages.
 
 ## Setup
 
-Set your private key as an environment variable:
+On first run, nitrous generates a keypair and config at
+`~/.config/nitrous/config.toml` automatically, then starts the TUI.
+
+To generate a new keypair into the configured `private_key_file`:
 
 ```sh
-export NOSTR_PRIVATE_KEY="nsec1..."
-
-# Or for debugging throw-away key
-NOSTR_PRIVATE_KEY=$(openssl rand -hex 32) go run . -config ./config.example.toml
+nitrous keygen
 ```
 
-A default config will be created at `~/.config/nitrous/config.toml` on first
-run if it doesn't exist.
+You can also set a key via the `NOSTR_PRIVATE_KEY` environment variable
+(falls back to this if `private_key_file` is not set).
 
 ## CLI flags
 
@@ -48,7 +48,7 @@ See ./config.example.toml for an example documentation.
 | `/join <event-id>`   | Join a channel by event ID                   |
 | `/join naddr1...`    | Join a NIP-29 relay-based group              |
 | `/join host'groupid` | Join a NIP-29 group by address               |
-| `/dm <npub>`         | Open a DM conversation                       |
+| `/dm <npub\|user@domain>` | Open a DM conversation (supports NIP-05) |
 | `/leave`             | Leave the current channel, group, or DM      |
 | `/me`                | Show QR code of your npub                    |
 | `/room`              | Show QR code of the current channel or group |
@@ -66,4 +66,5 @@ See ./config.example.toml for an example documentation.
 | NIP-42 | Client authentication |
 | NIP-44 | Versioned encryption |
 | NIP-59 | Gift Wrap |
+| NIP-05 | DNS-based internet identifiers (user lookup) |
 | NIP-65 | Relay List Metadata |

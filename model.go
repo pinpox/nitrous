@@ -670,6 +670,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 
+	case nip05ResolvedMsg:
+		if msg.Err != nil {
+			m.addSystemMsg(fmt.Sprintf("NIP-05 error: %v", msg.Err))
+			return m, nil
+		}
+		m.addSystemMsg(fmt.Sprintf("resolved %s → %s", msg.Identifier, shortPK(msg.PubKey)))
+		return m.openDM(msg.PubKey)
+
 	case nostrErrMsg:
 		log.Printf("nostrErrMsg: %s", msg.Error())
 		m.addSystemMsg(msg.Error())
@@ -1235,7 +1243,7 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 
 	case "/dm":
 		if arg == "" {
-			m.addSystemMsg("usage: /dm <npub or hex pubkey>")
+			m.addSystemMsg("usage: /dm <npub, hex pubkey, or NIP-05 address>")
 			return m, nil
 		}
 		return m.openDM(arg)
@@ -1330,7 +1338,7 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		m.addSystemMsg("/join <event-id> — join a channel by ID")
 		m.addSystemMsg("/join naddr1... [code] — join a NIP-29 group (with optional invite code)")
 		m.addSystemMsg("/join host'groupid [code] — join a NIP-29 group")
-		m.addSystemMsg("/dm <npub> — open a DM conversation")
+		m.addSystemMsg("/dm <npub|user@domain> — open a DM conversation")
 		m.addSystemMsg("/group create <name> <relay> — create a closed NIP-29 group")
 		m.addSystemMsg("/group set open|closed — set group open or closed")
 		m.addSystemMsg("/group user add <pubkey> — add a user to the group")
@@ -1599,6 +1607,12 @@ func (m *model) joinGroup(arg string) (tea.Model, tea.Cmd) {
 
 // openDM switches to a DM conversation, adding the peer if new.
 func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
+	// NIP-05 identifier: resolve asynchronously.
+	if strings.Contains(input, "@") {
+		m.addSystemMsg(fmt.Sprintf("resolving %s …", input))
+		return m, resolveNIP05Cmd(input)
+	}
+
 	pk := input
 	if strings.HasPrefix(input, "npub") {
 		prefix, decoded, err := nip19.Decode(input)
