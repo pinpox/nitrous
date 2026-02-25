@@ -21,10 +21,11 @@ type ProfileConfig struct {
 }
 
 type Config struct {
-	Relays      []string      `toml:"relays"`
-	GroupRelay  string        `toml:"group_relay"`
-	MaxMessages int           `toml:"max_messages"`
-	Profile     ProfileConfig `toml:"profile"`
+	Relays         []string      `toml:"relays"`
+	GroupRelay     string        `toml:"group_relay"`
+	PrivateKeyFile string        `toml:"private_key_file"`
+	MaxMessages    int           `toml:"max_messages"`
+	Profile        ProfileConfig `toml:"profile"`
 }
 
 // Room maps a human-readable name to a kind-40 event ID.

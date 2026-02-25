@@ -94,6 +94,11 @@ type model struct {
 	acSuggestions []string
 	acIndex       int
 
+	// Input history
+	inputHistory []string // sent messages, newest last
+	historyIndex int      // -1 = current input, 0..len-1 = history position from end
+	historySaved string   // unsent input saved when entering history
+
 	// Status
 	statusMsg string
 
@@ -683,6 +688,34 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Input history navigation — only when cursor is at the
+		// top (up) or bottom (down) line of the textarea.
+		if msg.String() == "up" && m.input.Line() == 0 && len(m.inputHistory) > 0 {
+			if m.historyIndex == -1 {
+				// Entering history: save current input.
+				m.historySaved = m.input.Value()
+				m.historyIndex = len(m.inputHistory) - 1
+			} else if m.historyIndex > 0 {
+				m.historyIndex--
+			}
+			m.input.SetValue(m.inputHistory[m.historyIndex])
+			m.syncInputHeight()
+			return m, nil
+		}
+		if msg.String() == "down" && m.input.Line() == m.input.LineCount()-1 && m.historyIndex >= 0 {
+			if m.historyIndex < len(m.inputHistory)-1 {
+				m.historyIndex++
+				m.input.SetValue(m.inputHistory[m.historyIndex])
+			} else {
+				// Past newest entry: restore saved input.
+				m.historyIndex = -1
+				m.input.SetValue(m.historySaved)
+				m.historySaved = ""
+			}
+			m.syncInputHeight()
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "ctrl+c":
 			if m.channelCancel != nil {
@@ -735,6 +768,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if text == "" {
 				return m, nil
 			}
+			m.inputHistory = append(m.inputHistory, text)
+			m.historyIndex = -1
+			m.historySaved = ""
 			m.input.Reset()
 			m.acSuggestions = nil
 			m.acIndex = 0
@@ -874,7 +910,7 @@ func (m *model) updateSuggestions() {
 		}
 
 	case strings.ToLower(tokens[0]) == "/join":
-		// "/join #<partial>" → filter channel names
+		// "/join <partial>" → filter channel names and invite links
 		if (len(tokens) == 1 && trailingSpace) || (len(tokens) == 2 && !trailingSpace) {
 			partial := ""
 			if len(tokens) == 2 {
@@ -884,6 +920,12 @@ func (m *model) updateSuggestions() {
 				candidate := "#" + ch.Name
 				if partial == "" || (strings.HasPrefix(strings.ToLower(candidate), strings.ToLower(partial)) && !strings.EqualFold(candidate, partial)) {
 					suggestions = append(suggestions, candidate)
+				}
+			}
+			// Scan current chat messages for invite links (host'groupid format).
+			for _, addr := range m.extractInviteAddresses() {
+				if partial == "" || (strings.HasPrefix(strings.ToLower(addr), strings.ToLower(partial)) && !strings.EqualFold(addr, partial)) {
+					suggestions = append(suggestions, addr)
 				}
 			}
 		}
@@ -1002,6 +1044,37 @@ func (m *model) viewAutocomplete() string {
 }
 
 // slicesEqual reports whether two string slices have equal contents.
+// extractInviteAddresses scans messages in the current chat for group invite
+// links in host'groupid format and returns them (most recent first, deduped).
+func (m *model) extractInviteAddresses() []string {
+	var msgs []ChatMessage
+	if m.isDMSelected() && len(m.dmPeers) > 0 {
+		msgs = m.dmMsgs[m.activeDMPeerPK()]
+	} else if m.isChannelSelected() && len(m.channels) > 0 {
+		msgs = m.channelMsgs[m.activeChannelID()]
+	} else if m.isGroupSelected() && len(m.groups) > 0 {
+		msgs = m.groupMsgs[m.activeGroupKey()]
+	} else {
+		msgs = m.globalMsgs
+	}
+
+	seen := make(map[string]bool)
+	var addrs []string
+	// Walk newest first so the most recent invite appears first.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		for _, word := range strings.Fields(msgs[i].Content) {
+			// Match host'groupid pattern (e.g. groups.fiatjaf.com'mygroup).
+			if strings.Contains(word, "'") && !strings.HasPrefix(word, "'") && !strings.HasSuffix(word, "'") {
+				if !seen[word] {
+					seen[word] = true
+					addrs = append(addrs, word)
+				}
+			}
+		}
+	}
+	return addrs
+}
+
 func slicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
