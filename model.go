@@ -318,6 +318,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateLayout()
 		return m, nil
 
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			m.viewport.ScrollUp(3)
+			return m, nil
+		case tea.MouseButtonWheelDown:
+			m.viewport.ScrollDown(3)
+			return m, nil
+		}
+		return m, nil
+
 	case channelCreatedMsg:
 		log.Printf("channelCreatedMsg: id=%s name=%q", msg.ID, msg.Name)
 		m.channels = append(m.channels, Channel{ID: msg.ID, Name: msg.Name})

@@ -93,7 +93,7 @@ func main() {
 	m := newModel(cfg, *configFlag, keys, pool, kr, rooms, groups, contacts, mdRender, mdStyle)
 
 	log.Println("starting TUI")
-	p := tea.NewProgram(&m, tea.WithAltScreen())
+	p := tea.NewProgram(&m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
