@@ -7,6 +7,9 @@ relays = [
 # Default relay for /group create (optional, can be overridden per command).
 # group_relay = "wss://groups.0xchat.com"
 
+# Blossom servers for file uploads (uploaded to all servers).
+# blossom_servers = ["https://blossom.nostr.build"]
+
 # Path to a file containing your private key (nsec or hex).
 # Falls back to NOSTR_PRIVATE_KEY env var if not set.
 private_key_file = "~/.config/nitrous/nsec"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -684,6 +685,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addSystemMsg(msg.Error())
 		return m, nil
 
+	case blossomUploadMsg:
+		m.addSystemMsg(fmt.Sprintf("uploaded: %s", msg.URL))
+		current := m.input.Value()
+		if current != "" && !strings.HasSuffix(current, " ") {
+			current += " "
+		}
+		m.input.SetValue(current + msg.URL)
+		return m, nil
+
+	case blossomUploadErrMsg:
+		m.addSystemMsg("upload failed: " + msg.Error())
+		return m, nil
+
 	case tea.KeyMsg:
 		// Dismiss QR overlay on any key (except ctrl+c which still quits).
 		if m.qrOverlay != "" {
@@ -701,6 +715,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.qrOverlay = ""
 			return m, nil
+		}
+
+		// Intercept bracketed paste: detect file paths for Blossom upload.
+		if msg.Paste {
+			text := strings.TrimSpace(string(msg.Runes))
+			if isFilePath(text) {
+				if len(m.cfg.BlossomServers) == 0 {
+					m.addSystemMsg("blossom_servers not configured")
+					return m, nil
+				}
+				m.addSystemMsg("uploading " + filepath.Base(text) + "...")
+				return m, blossomUploadCmd(m.cfg.BlossomServers, text, m.keys)
+			}
 		}
 
 		// Autocomplete key handling — intercept before textarea.

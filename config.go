@@ -23,6 +23,7 @@ type ProfileConfig struct {
 type Config struct {
 	Relays         []string      `toml:"relays"`
 	GroupRelay     string        `toml:"group_relay"`
+	BlossomServers []string      `toml:"blossom_servers"`
 	PrivateKeyFile string        `toml:"private_key_file"`
 	MaxMessages    int           `toml:"max_messages"`
 	Profile        ProfileConfig `toml:"profile"`
@@ -40,6 +41,9 @@ func defaultConfig() Config {
 			"wss://relay.damus.io",
 			"wss://relay.nostr.band",
 			"wss://nos.lol",
+		},
+		BlossomServers: []string{
+			"https://blossom.nostr.build",
 		},
 		MaxMessages: 500,
 	}
