@@ -323,7 +323,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.updateLayout()
-		return m, nil
+		return m, tea.ClearScreen
 
 	case tea.MouseMsg:
 		switch msg.Button {
@@ -2134,7 +2134,15 @@ func (m *model) viewStatusBar() string {
 }
 
 func appendMessage(msgs []ChatMessage, msg ChatMessage, maxMessages int) []ChatMessage {
-	msgs = append(msgs, msg)
+	// Insert in timestamp order (historical events may arrive newest-first).
+	i := len(msgs)
+	for i > 0 && msgs[i-1].Timestamp > msg.Timestamp {
+		i--
+	}
+	msgs = append(msgs, ChatMessage{})
+	copy(msgs[i+1:], msgs[i:])
+	msgs[i] = msg
+
 	if len(msgs) > maxMessages {
 		msgs = msgs[len(msgs)-maxMessages:]
 	}
