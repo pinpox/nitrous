@@ -7,10 +7,13 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/keyer"
+	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
 func main() {
@@ -36,6 +39,11 @@ func main() {
 		os.Exit(1)
 	}
 	log.Printf("config loaded: %d relays", len(cfg.Relays))
+
+	if len(flag.Args()) > 0 && flag.Args()[0] == "keygen" {
+		runKeygen(cfg)
+		return
+	}
 
 	keys, err := loadKeys(cfg)
 	if err != nil {
@@ -92,4 +100,53 @@ func main() {
 	}
 
 	pool.Close("shutdown")
+}
+
+func runKeygen(cfg Config) {
+	path := cfg.PrivateKeyFile
+	if path == "" {
+		fmt.Fprintf(os.Stderr, "error: private_key_file not set in config\n")
+		os.Exit(1)
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, path[2:])
+		}
+	}
+
+	if _, err := os.Stat(path); err == nil {
+		fmt.Fprintf(os.Stderr, "error: %s already exists, refusing to overwrite\n", path)
+		os.Exit(1)
+	}
+
+	sk := nostr.GeneratePrivateKey()
+	pk, err := nostr.GetPublicKey(sk)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error deriving public key: %v\n", err)
+		os.Exit(1)
+	}
+	nsec, err := nip19.EncodePrivateKey(sk)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error encoding nsec: %v\n", err)
+		os.Exit(1)
+	}
+	npub, err := nip19.EncodePublicKey(pk)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error encoding npub: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating directory: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(path, []byte(nsec+"\n"), 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing key file: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Generated new keypair:\n")
+	fmt.Printf("  nsec: %s\n", nsec)
+	fmt.Printf("  npub: %s\n", npub)
+	fmt.Printf("  file: %s\n", path)
 }

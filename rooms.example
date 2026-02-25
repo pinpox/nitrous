@@ -1,7 +1,0 @@
-# Rooms file for nitrous
-# Format: roomname event_id
-# Each line maps a human-readable name to a NIP-28 channel (kind-40 event ID)
-#
-# Example:
-# general abc123def456...
-# dev     789abc012def...
