@@ -1561,7 +1561,11 @@ func (m *model) joinChannel(arg string) (tea.Model, tea.Cmd) {
 	}
 
 	// New room — add with placeholder, fetch metadata to get the real name
-	m.channels = append(m.channels, Channel{Name: id[:8], ID: id})
+	placeholder := id
+	if len(placeholder) > 8 {
+		placeholder = placeholder[:8]
+	}
+	m.channels = append(m.channels, Channel{Name: placeholder, ID: id})
 	m.activeItem = len(m.channels) - 1
 	m.updateViewport()
 	return m, tea.Batch(

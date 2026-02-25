@@ -158,7 +158,7 @@ func fetchChannelMetaCmd(pool *nostr.SimplePool, relays []string, eventID string
 		})
 		if re == nil {
 			log.Printf("fetchChannelMeta: not found for %s", eventID)
-			return channelMetaMsg{ID: eventID, Name: eventID[:8]}
+			return channelMetaMsg{ID: eventID, Name: shortPK(eventID)}
 		}
 
 		var meta struct {
@@ -166,7 +166,7 @@ func fetchChannelMetaCmd(pool *nostr.SimplePool, relays []string, eventID string
 		}
 		if err := json.Unmarshal([]byte(re.Content), &meta); err != nil || meta.Name == "" {
 			log.Printf("fetchChannelMeta: no name in metadata for %s", eventID)
-			return channelMetaMsg{ID: eventID, Name: eventID[:8]}
+			return channelMetaMsg{ID: eventID, Name: shortPK(eventID)}
 		}
 
 		log.Printf("fetchChannelMeta: resolved %s -> %q", eventID, meta.Name)
@@ -1027,7 +1027,7 @@ func createGroupInviteCmd(pool *nostr.SimplePool, relayURL, groupID string, prev
 		// The invite code is typically returned as the event content by the relay.
 		code := evt.Content
 		if code == "" {
-			code = evt.GetID()[:8]
+			code = shortPK(evt.GetID())
 		}
 
 		log.Printf("createGroupInviteCmd: invite for group %s on %s: %s", groupID, relayURL, code)
