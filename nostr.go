@@ -787,7 +787,12 @@ func joinGroupCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs 
 			return nostrErrMsg{fmt.Errorf("group join: connect %s: %w", relayURL, err)}
 		}
 		if err := r.Publish(ctx, evt); err != nil {
-			return nostrErrMsg{fmt.Errorf("group join: publish: %w", err)}
+			// "already a member" is not a real error — treat it as success.
+			errStr := strings.ToLower(err.Error())
+			if !strings.Contains(errStr, "already") {
+				return nostrErrMsg{fmt.Errorf("group join: publish: %w", err)}
+			}
+			log.Printf("joinGroupCmd: %s (treating as success)", err)
 		}
 
 		log.Printf("joinGroupCmd: sent kind 9021 to %s for group %s", relayURL, groupID)
