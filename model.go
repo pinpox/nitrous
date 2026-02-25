@@ -2116,20 +2116,21 @@ func (m *model) viewContent() string {
 	return lipgloss.NewStyle().Height(totalHeight).MaxHeight(totalHeight).Render(inner)
 }
 
+func (m *model) connectedRelayCount() int {
+	count := 0
+	m.pool.Relays.Range(func(_ string, relay *nostr.Relay) bool {
+		if relay.IsConnected() {
+			count++
+		}
+		return true
+	})
+	return count
+}
+
 func (m *model) viewStatusBar() string {
-	left := statusConnectedStyle.Render(fmt.Sprintf("● %d relays · %d rooms · %d groups", len(m.relays), len(m.channels), len(m.groups)))
-	npub := m.keys.NPub
-	if len(npub) > 20 {
-		npub = npub[:20] + "..."
-	}
-	right := npub
-
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
-	if gap < 0 {
-		gap = 0
-	}
-
-	bar := left + strings.Repeat(" ", gap) + right
+	connected := m.connectedRelayCount()
+	total := len(m.relays)
+	bar := statusConnectedStyle.Render(fmt.Sprintf("● %d/%d relays", connected, total))
 	return statusBarStyle.Width(m.width).Render(bar)
 }
 
