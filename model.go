@@ -1971,5 +1971,7 @@ func renderQR(title, content string) string {
 		WhiteBlackChar: qrterminal.WHITE_BLACK,
 		QuietZone:      1,
 	})
+	buf.WriteString("\n")
+	buf.WriteString(chatSystemStyle.Render(content))
 	return buf.String()
 }
