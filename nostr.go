@@ -161,32 +161,39 @@ func fetchChannelMetaCmd(pool *nostr.SimplePool, relays []string, eventID string
 			return channelMetaMsg{ID: eventID, Name: shortPK(eventID)}
 		}
 
-		var meta struct {
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal([]byte(re.Content), &meta); err != nil || meta.Name == "" {
+		name := parseChannelMeta(re.Content)
+		if name == "" {
 			log.Printf("fetchChannelMeta: no name in metadata for %s", eventID)
 			return channelMetaMsg{ID: eventID, Name: shortPK(eventID)}
 		}
 
-		log.Printf("fetchChannelMeta: resolved %s -> %q", eventID, meta.Name)
-		return channelMetaMsg{ID: eventID, Name: meta.Name}
+		log.Printf("fetchChannelMeta: resolved %s -> %q", eventID, name)
+		return channelMetaMsg{ID: eventID, Name: name}
 	}
+}
+
+// buildCreateChannelEvent builds a kind-40 event to create a NIP-28 channel.
+func buildCreateChannelEvent(name string, keys Keys) (nostr.Event, error) {
+	meta, _ := json.Marshal(struct {
+		Name string `json:"name"`
+	}{Name: name})
+
+	evt := nostr.Event{
+		Kind:      40,
+		CreatedAt: nostr.Now(),
+		Content:   string(meta),
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
 }
 
 // createChannelCmd publishes a kind-40 event to create a NIP-28 channel.
 func createChannelCmd(pool *nostr.SimplePool, relays []string, name string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		meta, _ := json.Marshal(struct {
-			Name string `json:"name"`
-		}{Name: name})
-
-		evt := nostr.Event{
-			Kind:      40,
-			CreatedAt: nostr.Now(),
-			Content:   string(meta),
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildCreateChannelEvent(name, keys)
+		if err != nil {
 			return nostrErrMsg{err}
 		}
 
@@ -322,19 +329,28 @@ func waitForChannelEvent(events <-chan nostr.RelayEvent, channelID string, keys 
 	}
 }
 
+// buildChannelMessageEvent builds a kind-42 message event for a NIP-28 channel.
+func buildChannelMessageEvent(channelID, content string, keys Keys) (nostr.Event, error) {
+	evt := nostr.Event{
+		Kind:      42,
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"e", channelID, "", "root"},
+		},
+		Content: content,
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // publishChannelMessage signs and publishes a kind-42 message to a channel.
 // Returns a channelEventMsg with the local message so it appears immediately.
 func publishChannelMessage(pool *nostr.SimplePool, relays []string, channelID string, content string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		evt := nostr.Event{
-			Kind:      42,
-			CreatedAt: nostr.Now(),
-			Tags: nostr.Tags{
-				{"e", channelID, "", "root"},
-			},
-			Content: content,
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildChannelMessageEvent(channelID, content, keys)
+		if err != nil {
 			return nostrErrMsg{err}
 		}
 
@@ -530,19 +546,7 @@ func fetchProfileCmd(pool *nostr.SimplePool, relays []string, pubkey string) tea
 			return profileResolvedMsg{PubKey: pubkey, DisplayName: shortPK(pubkey)}
 		}
 
-		var meta struct {
-			Name        string `json:"name"`
-			DisplayName string `json:"display_name"`
-		}
-		if err := json.Unmarshal([]byte(re.Content), &meta); err != nil {
-			log.Printf("fetchProfile: bad JSON for %s: %v", shortPK(pubkey), err)
-			return profileResolvedMsg{PubKey: pubkey, DisplayName: shortPK(pubkey)}
-		}
-
-		name := meta.DisplayName
-		if name == "" {
-			name = meta.Name
-		}
+		name := parseProfileMeta(re.Content)
 		if name == "" {
 			name = shortPK(pubkey)
 		}
@@ -552,35 +556,44 @@ func fetchProfileCmd(pool *nostr.SimplePool, relays []string, pubkey string) tea
 	}
 }
 
+// buildProfileEvent builds a kind-0 event with the user's profile metadata.
+func buildProfileEvent(profile ProfileConfig, keys Keys) (nostr.Event, error) {
+	meta := map[string]string{}
+	if profile.Name != "" {
+		meta["name"] = profile.Name
+	}
+	if profile.DisplayName != "" {
+		meta["display_name"] = profile.DisplayName
+	}
+	if profile.About != "" {
+		meta["about"] = profile.About
+	}
+	if profile.Picture != "" {
+		meta["picture"] = profile.Picture
+	}
+
+	content, err := json.Marshal(meta)
+	if err != nil {
+		return nostr.Event{}, fmt.Errorf("marshal: %w", err)
+	}
+
+	evt := nostr.Event{
+		Kind:      0,
+		CreatedAt: nostr.Now(),
+		Content:   string(content),
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, fmt.Errorf("sign: %w", err)
+	}
+	return evt, nil
+}
+
 // publishProfileCmd publishes a kind-0 event with the user's profile metadata.
 func publishProfileCmd(pool *nostr.SimplePool, relays []string, profile ProfileConfig, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		meta := map[string]string{}
-		if profile.Name != "" {
-			meta["name"] = profile.Name
-		}
-		if profile.DisplayName != "" {
-			meta["display_name"] = profile.DisplayName
-		}
-		if profile.About != "" {
-			meta["about"] = profile.About
-		}
-		if profile.Picture != "" {
-			meta["picture"] = profile.Picture
-		}
-
-		content, err := json.Marshal(meta)
+		evt, err := buildProfileEvent(profile, keys)
 		if err != nil {
-			return nostrErrMsg{fmt.Errorf("publishProfile: marshal: %w", err)}
-		}
-
-		evt := nostr.Event{
-			Kind:      0,
-			CreatedAt: nostr.Now(),
-			Content:   string(content),
-		}
-		if err := evt.Sign(keys.SK); err != nil {
-			return nostrErrMsg{fmt.Errorf("publishProfile: sign: %w", err)}
+			return nostrErrMsg{fmt.Errorf("publishProfile: %w", err)}
 		}
 
 		ctx := context.Background()
@@ -592,22 +605,31 @@ func publishProfileCmd(pool *nostr.SimplePool, relays []string, profile ProfileC
 	}
 }
 
+// buildDMRelaysEvent builds a kind-10050 event (NIP-17 DM relay list).
+func buildDMRelaysEvent(relays []string, keys Keys) (nostr.Event, error) {
+	var tags nostr.Tags
+	for _, r := range relays {
+		tags = append(tags, nostr.Tag{"relay", r})
+	}
+
+	evt := nostr.Event{
+		Kind:      10050,
+		CreatedAt: nostr.Now(),
+		Tags:      tags,
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // publishDMRelaysCmd publishes a kind-10050 event (NIP-17 DM relay list)
 // so other clients know where to send gift-wrapped DMs.
 func publishDMRelaysCmd(pool *nostr.SimplePool, relays []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		var tags nostr.Tags
-		for _, r := range relays {
-			tags = append(tags, nostr.Tag{"relay", r})
-		}
-
-		evt := nostr.Event{
-			Kind:      10050,
-			CreatedAt: nostr.Now(),
-			Tags:      tags,
-		}
-		if err := evt.Sign(keys.SK); err != nil {
-			return nostrErrMsg{fmt.Errorf("publishDMRelays: sign: %w", err)}
+		evt, err := buildDMRelaysEvent(relays, keys)
+		if err != nil {
+			return nostrErrMsg{fmt.Errorf("publishDMRelays: %w", err)}
 		}
 
 		ctx := context.Background()
@@ -725,19 +747,28 @@ func waitForGroupEvent(events <-chan nostr.RelayEvent, gk string, relayURL strin
 	}
 }
 
+// buildGroupMessageEvent builds a kind-9 message event for a NIP-29 group.
+func buildGroupMessageEvent(groupID, content string, previousIDs []string, keys Keys) (nostr.Event, error) {
+	tags := nostr.Tags{{"h", groupID}}
+	tags = append(tags, pickPreviousTags(previousIDs)...)
+	evt := nostr.Event{
+		Kind:      nostr.KindSimpleGroupChatMessage,
+		CreatedAt: nostr.Now(),
+		Tags:      tags,
+		Content:   content,
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // publishGroupMessage signs and publishes a kind-9 message to a NIP-29 group.
 func publishGroupMessage(pool *nostr.SimplePool, relayURL, groupID, content string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		gk := groupKey(relayURL, groupID)
-		tags := nostr.Tags{{"h", groupID}}
-		tags = append(tags, pickPreviousTags(previousIDs)...)
-		evt := nostr.Event{
-			Kind:      nostr.KindSimpleGroupChatMessage,
-			CreatedAt: nostr.Now(),
-			Tags:      tags,
-			Content:   content,
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildGroupMessageEvent(groupID, content, previousIDs, keys)
+		if err != nil {
 			return nostrErrMsg{err}
 		}
 
@@ -763,20 +794,29 @@ func publishGroupMessage(pool *nostr.SimplePool, relayURL, groupID, content stri
 	}
 }
 
+// buildJoinGroupEvent builds a kind-9021 join request event for a NIP-29 group.
+func buildJoinGroupEvent(groupID string, previousIDs []string, inviteCode string, keys Keys) (nostr.Event, error) {
+	tags := nostr.Tags{{"h", groupID}}
+	if inviteCode != "" {
+		tags = append(tags, nostr.Tag{"code", inviteCode})
+	}
+	tags = append(tags, pickPreviousTags(previousIDs)...)
+	evt := nostr.Event{
+		Kind:      nostr.KindSimpleGroupJoinRequest,
+		CreatedAt: nostr.Now(),
+		Tags:      tags,
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // joinGroupCmd publishes a kind-9021 join request for a NIP-29 group.
 func joinGroupCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs []string, inviteCode string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		tags := nostr.Tags{{"h", groupID}}
-		if inviteCode != "" {
-			tags = append(tags, nostr.Tag{"code", inviteCode})
-		}
-		tags = append(tags, pickPreviousTags(previousIDs)...)
-		evt := nostr.Event{
-			Kind:      nostr.KindSimpleGroupJoinRequest,
-			CreatedAt: nostr.Now(),
-			Tags:      tags,
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildJoinGroupEvent(groupID, previousIDs, inviteCode, keys)
+		if err != nil {
 			return nostrErrMsg{fmt.Errorf("group join: sign: %w", err)}
 		}
 
@@ -800,17 +840,26 @@ func joinGroupCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs 
 	}
 }
 
+// buildLeaveGroupEvent builds a kind-9022 leave request event for a NIP-29 group.
+func buildLeaveGroupEvent(groupID string, previousIDs []string, keys Keys) (nostr.Event, error) {
+	tags := nostr.Tags{{"h", groupID}}
+	tags = append(tags, pickPreviousTags(previousIDs)...)
+	evt := nostr.Event{
+		Kind:      nostr.KindSimpleGroupLeaveRequest,
+		CreatedAt: nostr.Now(),
+		Tags:      tags,
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // leaveGroupCmd publishes a kind-9022 leave request for a NIP-29 group.
 func leaveGroupCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		tags := nostr.Tags{{"h", groupID}}
-		tags = append(tags, pickPreviousTags(previousIDs)...)
-		evt := nostr.Event{
-			Kind:      nostr.KindSimpleGroupLeaveRequest,
-			CreatedAt: nostr.Now(),
-			Tags:      tags,
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildLeaveGroupEvent(groupID, previousIDs, keys)
+		if err != nil {
 			return nostrErrMsg{fmt.Errorf("group leave: sign: %w", err)}
 		}
 
@@ -940,6 +989,20 @@ type groupInviteCreatedMsg struct {
 	Code     string
 }
 
+// buildCreateGroupEvent builds a kind-9007 event to create a NIP-29 group.
+// The groupID must be provided by the caller (typically a random 8-hex-char string).
+func buildCreateGroupEvent(groupID, name string, keys Keys) (nostr.Event, error) {
+	evt := nostr.Event{
+		Kind:      nostr.KindSimpleGroupCreateGroup,
+		CreatedAt: nostr.Now(),
+		Tags:      nostr.Tags{{"h", groupID}, {"name", name}},
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // createGroupCmd publishes a kind 9007 event to create a NIP-29 group on a relay.
 func createGroupCmd(pool *nostr.SimplePool, relayURL, name string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
@@ -950,12 +1013,8 @@ func createGroupCmd(pool *nostr.SimplePool, relayURL, name string, keys Keys) te
 		}
 		groupID := hex.EncodeToString(idBytes)
 
-		evt := nostr.Event{
-			Kind:      nostr.KindSimpleGroupCreateGroup,
-			CreatedAt: nostr.Now(),
-			Tags:      nostr.Tags{{"h", groupID}, {"name", name}},
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildCreateGroupEvent(groupID, name, keys)
+		if err != nil {
 			return nostrErrMsg{fmt.Errorf("create group: sign: %w", err)}
 		}
 
@@ -974,18 +1033,27 @@ func createGroupCmd(pool *nostr.SimplePool, relayURL, name string, keys Keys) te
 	}
 }
 
+// buildDeleteGroupEventEvent builds a kind-9005 event to delete an event from a NIP-29 group.
+func buildDeleteGroupEventEvent(groupID, eventID string, previousIDs []string, keys Keys) (nostr.Event, error) {
+	tags := nostr.Tags{{"h", groupID}, {"e", eventID}}
+	tags = append(tags, pickPreviousTags(previousIDs)...)
+
+	evt := nostr.Event{
+		Kind:      nostr.KindSimpleGroupDeleteEvent,
+		CreatedAt: nostr.Now(),
+		Tags:      tags,
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // deleteGroupEventCmd publishes a kind 9005 event to delete an event from a NIP-29 group.
 func deleteGroupEventCmd(pool *nostr.SimplePool, relayURL, groupID, eventID string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		tags := nostr.Tags{{"h", groupID}, {"e", eventID}}
-		tags = append(tags, pickPreviousTags(previousIDs)...)
-
-		evt := nostr.Event{
-			Kind:      nostr.KindSimpleGroupDeleteEvent,
-			CreatedAt: nostr.Now(),
-			Tags:      tags,
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildDeleteGroupEventEvent(groupID, eventID, previousIDs, keys)
+		if err != nil {
 			return nostrErrMsg{fmt.Errorf("delete event: sign: %w", err)}
 		}
 
@@ -1004,18 +1072,27 @@ func deleteGroupEventCmd(pool *nostr.SimplePool, relayURL, groupID, eventID stri
 	}
 }
 
+// buildCreateGroupInviteEvent builds a kind-9009 invite event for a NIP-29 group.
+func buildCreateGroupInviteEvent(groupID string, previousIDs []string, keys Keys) (nostr.Event, error) {
+	tags := nostr.Tags{{"h", groupID}}
+	tags = append(tags, pickPreviousTags(previousIDs)...)
+
+	evt := nostr.Event{
+		Kind:      nostr.KindSimpleGroupCreateInvite,
+		CreatedAt: nostr.Now(),
+		Tags:      tags,
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // createGroupInviteCmd publishes a kind 9009 event to create an invite for a NIP-29 group.
 func createGroupInviteCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		tags := nostr.Tags{{"h", groupID}}
-		tags = append(tags, pickPreviousTags(previousIDs)...)
-
-		evt := nostr.Event{
-			Kind:      nostr.KindSimpleGroupCreateInvite,
-			CreatedAt: nostr.Now(),
-			Tags:      tags,
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildCreateGroupInviteEvent(groupID, previousIDs, keys)
+		if err != nil {
 			return nostrErrMsg{fmt.Errorf("create invite: sign: %w", err)}
 		}
 
@@ -1050,18 +1127,27 @@ func inviteDMCmd(pool *nostr.SimplePool, relays []string, relayURL, groupID, gro
 	}
 }
 
+// buildPutUserEvent builds a kind-9000 event to add a user to a NIP-29 group.
+func buildPutUserEvent(groupID, pubkey string, previousIDs []string, keys Keys) (nostr.Event, error) {
+	tags := nostr.Tags{{"h", groupID}, {"p", pubkey}}
+	tags = append(tags, pickPreviousTags(previousIDs)...)
+
+	evt := nostr.Event{
+		Kind:      nostr.KindSimpleGroupPutUser,
+		CreatedAt: nostr.Now(),
+		Tags:      tags,
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // putUserCmd publishes a kind 9000 event to add a user to a NIP-29 group.
 func putUserCmd(pool *nostr.SimplePool, relayURL, groupID, pubkey string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		tags := nostr.Tags{{"h", groupID}, {"p", pubkey}}
-		tags = append(tags, pickPreviousTags(previousIDs)...)
-
-		evt := nostr.Event{
-			Kind:      nostr.KindSimpleGroupPutUser,
-			CreatedAt: nostr.Now(),
-			Tags:      tags,
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildPutUserEvent(groupID, pubkey, previousIDs, keys)
+		if err != nil {
 			return nostrErrMsg{fmt.Errorf("put user: sign: %w", err)}
 		}
 
@@ -1080,25 +1166,34 @@ func putUserCmd(pool *nostr.SimplePool, relayURL, groupID, pubkey string, previo
 	}
 }
 
+// buildEditGroupMetadataEvent builds a kind-9002 event to edit group metadata.
+func buildEditGroupMetadataEvent(groupID string, fields map[string]string, previousIDs []string, keys Keys) (nostr.Event, error) {
+	tags := nostr.Tags{{"h", groupID}}
+	for k, v := range fields {
+		if v == "" {
+			tags = append(tags, nostr.Tag{k})
+		} else {
+			tags = append(tags, nostr.Tag{k, v})
+		}
+	}
+	tags = append(tags, pickPreviousTags(previousIDs)...)
+
+	evt := nostr.Event{
+		Kind:      nostr.KindSimpleGroupEditMetadata,
+		CreatedAt: nostr.Now(),
+		Tags:      tags,
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // editGroupMetadataCmd publishes a kind 9002 event to edit group metadata.
 func editGroupMetadataCmd(pool *nostr.SimplePool, relayURL, groupID string, fields map[string]string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		tags := nostr.Tags{{"h", groupID}}
-		for k, v := range fields {
-			if v == "" {
-				tags = append(tags, nostr.Tag{k})
-			} else {
-				tags = append(tags, nostr.Tag{k, v})
-			}
-		}
-		tags = append(tags, pickPreviousTags(previousIDs)...)
-
-		evt := nostr.Event{
-			Kind:      nostr.KindSimpleGroupEditMetadata,
-			CreatedAt: nostr.Now(),
-			Tags:      tags,
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildEditGroupMetadataEvent(groupID, fields, previousIDs, keys)
+		if err != nil {
 			return nostrErrMsg{fmt.Errorf("edit metadata: sign: %w", err)}
 		}
 
@@ -1174,6 +1269,33 @@ func resolveNIP05Cmd(identifier string) tea.Cmd {
 		log.Printf("resolveNIP05: %s -> %s", identifier, shortPK(pk))
 		return nip05ResolvedMsg{Identifier: identifier, PubKey: pk}
 	}
+}
+
+// parseProfileMeta extracts a display name from a kind-0 profile JSON content string.
+// Prefers display_name, falls back to name, then returns empty string.
+func parseProfileMeta(content string) string {
+	var meta struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.Unmarshal([]byte(content), &meta); err != nil {
+		return ""
+	}
+	if meta.DisplayName != "" {
+		return meta.DisplayName
+	}
+	return meta.Name
+}
+
+// parseChannelMeta extracts a channel name from a kind-40 channel JSON content string.
+func parseChannelMeta(content string) string {
+	var meta struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(content), &meta); err != nil {
+		return ""
+	}
+	return meta.Name
 }
 
 // shortPK returns the first 8 characters of a public key for display.

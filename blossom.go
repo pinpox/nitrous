@@ -32,6 +32,24 @@ type blossomUploadErrMsg struct{ err error }
 
 func (e blossomUploadErrMsg) Error() string { return e.err.Error() }
 
+// buildBlossomAuthEvent builds a kind-24242 event for Blossom upload authentication.
+func buildBlossomAuthEvent(hashHex string, keys Keys) (nostr.Event, error) {
+	expiration := time.Now().Add(5 * time.Minute).Unix()
+	evt := nostr.Event{
+		Kind:      24242,
+		CreatedAt: nostr.Now(),
+		Tags: nostr.Tags{
+			{"t", "upload"},
+			{"x", hashHex},
+			{"expiration", fmt.Sprintf("%d", expiration)},
+		},
+	}
+	if err := evt.Sign(keys.SK); err != nil {
+		return evt, err
+	}
+	return evt, nil
+}
+
 // blossomUploadCmd uploads a file to the configured Blossom servers.
 func blossomUploadCmd(servers []string, filePath string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
@@ -55,17 +73,8 @@ func blossomUploadCmd(servers []string, filePath string, keys Keys) tea.Cmd {
 		mimeType := http.DetectContentType(data)
 
 		// Build kind 24242 auth event.
-		expiration := time.Now().Add(5 * time.Minute).Unix()
-		evt := nostr.Event{
-			Kind:      24242,
-			CreatedAt: nostr.Now(),
-			Tags: nostr.Tags{
-				{"t", "upload"},
-				{"x", hashHex},
-				{"expiration", fmt.Sprintf("%d", expiration)},
-			},
-		}
-		if err := evt.Sign(keys.SK); err != nil {
+		evt, err := buildBlossomAuthEvent(hashHex, keys)
+		if err != nil {
 			return blossomUploadErrMsg{fmt.Errorf("sign auth: %w", err)}
 		}
 
