@@ -192,14 +192,18 @@ func buildCreateChannelEvent(name string, keys Keys) (nostr.Event, error) {
 // createChannelCmd publishes a kind-40 event to create a NIP-28 channel.
 func createChannelCmd(pool *nostr.SimplePool, relays []string, name string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
+		log.Printf("createChannelCmd: starting for %q", name)
 		evt, err := buildCreateChannelEvent(name, keys)
 		if err != nil {
 			return nostrErrMsg{err}
 		}
 
-		ctx := context.Background()
-		for range pool.PublishMany(ctx, relays, evt) {
-		}
+		// Fire and forget — don't block the UI waiting for slow relays.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		go func() {
+			defer cancel()
+			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+		}()
 
 		id := evt.GetID()
 		log.Printf("createChannelCmd: created %q -> %s", name, id)
@@ -354,9 +358,11 @@ func publishChannelMessage(pool *nostr.SimplePool, relays []string, channelID st
 			return nostrErrMsg{err}
 		}
 
-		ctx := context.Background()
-		for range pool.PublishMany(ctx, relays, evt) {
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		go func() {
+			defer cancel()
+			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+		}()
 
 		return channelEventMsg(ChatMessage{
 			Author:    shortPK(keys.PK),
@@ -596,11 +602,12 @@ func publishProfileCmd(pool *nostr.SimplePool, relays []string, profile ProfileC
 			return nostrErrMsg{fmt.Errorf("publishProfile: %w", err)}
 		}
 
-		ctx := context.Background()
-		for range pool.PublishMany(ctx, relays, evt) {
-		}
-
-		log.Printf("publishProfile: published kind 0")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		go func() {
+			defer cancel()
+			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+			log.Printf("publishProfile: published kind 0")
+		}()
 		return nil
 	}
 }
@@ -632,11 +639,12 @@ func publishDMRelaysCmd(pool *nostr.SimplePool, relays []string, keys Keys) tea.
 			return nostrErrMsg{fmt.Errorf("publishDMRelays: %w", err)}
 		}
 
-		ctx := context.Background()
-		for range pool.PublishMany(ctx, relays, evt) {
-		}
-
-		log.Printf("publishDMRelays: published kind 10050 with %d relays", len(relays))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		go func() {
+			defer cancel()
+			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+			log.Printf("publishDMRelays: published kind 10050 with %d relays", len(relays))
+		}()
 		return nil
 	}
 }
@@ -1299,9 +1307,155 @@ func parseChannelMeta(content string) string {
 }
 
 // shortPK returns the first 8 characters of a public key for display.
+// drainPublish drains the PublishMany result channel with context awareness,
+// so a hanging relay doesn't block forever.
+func drainPublish(ctx context.Context, ch <-chan nostr.PublishResult) {
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func shortPK(pk string) string {
 	if len(pk) > 8 {
 		return pk[:8]
 	}
 	return pk
+}
+
+// --- NIP-51 List Sync ---
+
+// nip51ListsFetchedMsg is returned after querying relays for the user's NIP-51 lists.
+type nip51ListsFetchedMsg struct {
+	contacts   []Contact
+	contactsTS nostr.Timestamp
+	channels   []Channel
+	channelsTS nostr.Timestamp
+	groups     []SavedGroup
+	groupsTS   nostr.Timestamp
+}
+
+// nip51PublishResultMsg is returned after publishing a NIP-51 list event.
+type nip51PublishResultMsg struct {
+	listKind int
+	err      error
+}
+
+// fetchNIP51ListsCmd queries relays for the user's kind 30000, 10005, and 10009 lists.
+func fetchNIP51ListsCmd(pool *nostr.SimplePool, relays []string, keys Keys, kr nostr.Keyer) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		var result nip51ListsFetchedMsg
+
+		// Kind 30000 "Chat-Friends" (parameterized replaceable)
+		re := pool.QuerySingle(ctx, relays, nostr.Filter{
+			Kinds:   []int{nostr.KindCategorizedPeopleList},
+			Authors: []string{keys.PK},
+			Tags:    nostr.TagMap{"d": {"Chat-Friends"}},
+		})
+		if re != nil {
+			contacts, err := parseContactsListEvent(ctx, re.Event, kr)
+			if err != nil {
+				log.Printf("fetchNIP51Lists: contacts parse error: %v", err)
+			} else {
+				result.contacts = contacts
+				result.contactsTS = re.CreatedAt
+				log.Printf("fetchNIP51Lists: got %d contacts (ts=%d)", len(contacts), re.CreatedAt)
+			}
+		}
+
+		// Kind 10005 (public chat list, standard replaceable)
+		re = pool.QuerySingle(ctx, relays, nostr.Filter{
+			Kinds:   []int{nostr.KindPublicChatList},
+			Authors: []string{keys.PK},
+		})
+		if re != nil {
+			channels := parsePublicChatsListEvent(re.Event)
+			result.channels = channels
+			result.channelsTS = re.CreatedAt
+			log.Printf("fetchNIP51Lists: got %d channels (ts=%d)", len(channels), re.CreatedAt)
+		}
+
+		// Kind 10009 (simple group list, standard replaceable)
+		re = pool.QuerySingle(ctx, relays, nostr.Filter{
+			Kinds:   []int{nostr.KindSimpleGroupList},
+			Authors: []string{keys.PK},
+		})
+		if re != nil {
+			groups := parseSimpleGroupsListEvent(re.Event)
+			result.groups = groups
+			result.groupsTS = re.CreatedAt
+			log.Printf("fetchNIP51Lists: got %d groups (ts=%d)", len(groups), re.CreatedAt)
+		}
+
+		return result
+	}
+}
+
+// publishContactsListCmd builds and publishes a kind 30000 "Chat-Friends" event.
+func publishContactsListCmd(pool *nostr.SimplePool, relays []string, contacts []Contact, keys Keys, kr nostr.Keyer) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+		evt, err := buildContactsListEvent(ctx, contacts, keys, kr)
+		if err != nil {
+			cancel()
+			return nip51PublishResultMsg{listKind: nostr.KindCategorizedPeopleList, err: err}
+		}
+
+		go func() {
+			defer cancel()
+			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+			log.Printf("publishContactsList: published kind %d with %d contacts", nostr.KindCategorizedPeopleList, len(contacts))
+		}()
+		return nip51PublishResultMsg{listKind: nostr.KindCategorizedPeopleList}
+	}
+}
+
+// publishPublicChatsListCmd builds and publishes a kind 10005 event.
+func publishPublicChatsListCmd(pool *nostr.SimplePool, relays []string, channels []Channel, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+		evt, err := buildPublicChatsListEvent(channels, keys)
+		if err != nil {
+			cancel()
+			return nip51PublishResultMsg{listKind: nostr.KindPublicChatList, err: err}
+		}
+
+		go func() {
+			defer cancel()
+			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+			log.Printf("publishPublicChatsList: published kind %d with %d channels", nostr.KindPublicChatList, len(channels))
+		}()
+		return nip51PublishResultMsg{listKind: nostr.KindPublicChatList}
+	}
+}
+
+// publishSimpleGroupsListCmd builds and publishes a kind 10009 event.
+func publishSimpleGroupsListCmd(pool *nostr.SimplePool, relays []string, groups []Group, keys Keys) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+		evt, err := buildSimpleGroupsListEvent(groups, keys)
+		if err != nil {
+			cancel()
+			return nip51PublishResultMsg{listKind: nostr.KindSimpleGroupList, err: err}
+		}
+
+		go func() {
+			defer cancel()
+			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+			log.Printf("publishSimpleGroupsList: published kind %d with %d groups", nostr.KindSimpleGroupList, len(groups))
+		}()
+		return nip51PublishResultMsg{listKind: nostr.KindSimpleGroupList}
+	}
 }

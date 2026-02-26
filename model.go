@@ -110,6 +110,11 @@ type model struct {
 
 	// QR overlay (non-empty = show full-screen QR)
 	qrOverlay string
+
+	// NIP-51 list timestamps — used to detect whether relay data is newer.
+	contactsListTS nostr.Timestamp
+	channelsListTS nostr.Timestamp
+	groupsListTS   nostr.Timestamp
 }
 
 // isChannelSelected returns true if the active sidebar item is a channel.
@@ -289,13 +294,14 @@ func (m *model) Init() tea.Cmd {
 	} else if len(m.groups) > 0 {
 		m.addSystemMsg(fmt.Sprintf("joining ~%s ...", m.groups[0].Name))
 	} else {
-		m.addSystemMsg("no rooms configured — use /create #name or /join <event-id>")
+		m.addSystemMsg("no rooms configured — use /channel create #name or /join <event-id>")
 	}
 
 	cmds := []tea.Cmd{
 		textarea.Blink,
 		subscribeDMCmd(m.pool, m.relays, m.kr, m.lastDMSeen),
 		publishDMRelaysCmd(m.pool, m.relays, m.keys),
+		fetchNIP51ListsCmd(m.pool, m.relays, m.keys, m.kr),
 	}
 	if len(m.channels) > 0 && m.isChannelSelected() {
 		cmds = append(cmds, subscribeChannelCmd(m.pool, m.relays, m.channels[0].ID))
@@ -359,7 +365,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rooms = append(m.rooms, room)
 		}
 		m.updateViewport()
-		return m, subscribeChannelCmd(m.pool, m.relays, msg.ID)
+		return m, tea.Batch(
+			subscribeChannelCmd(m.pool, m.relays, msg.ID),
+			publishPublicChatsListCmd(m.pool, m.relays, m.channels, m.keys),
+		)
 
 	case channelMetaMsg:
 		log.Printf("channelMetaMsg: id=%s name=%q", msg.ID, msg.Name)
@@ -369,14 +378,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		room := Room{Name: msg.Name, ID: msg.ID}
-		if err := AppendRoom(m.cfgFlagPath, room); err != nil {
+		if err := UpdateRoomName(m.cfgFlagPath, msg.ID, msg.Name); err != nil {
 			log.Printf("channelMetaMsg: failed to save room: %v", err)
 			m.addSystemMsg("failed to save room: " + err.Error())
-		} else {
-			m.rooms = append(m.rooms, room)
 		}
-		return m, nil
+		return m, publishPublicChatsListCmd(m.pool, m.relays, m.channels, m.keys)
 
 	case channelSubStartedMsg:
 		log.Println("channelSubStartedMsg received")
@@ -456,7 +462,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		peer := cm.PubKey
 		m.dmMsgs[peer] = appendMessage(m.dmMsgs[peer], cm, m.cfg.MaxMessages)
+		newPeer := false
 		if !containsStr(m.dmPeers, peer) {
+			newPeer = true
 			m.dmPeers = append(m.dmPeers, peer)
 			if err := AppendContact(m.cfgFlagPath, Contact{Name: m.resolveAuthor(peer), PubKey: peer}); err != nil {
 				log.Printf("dmEventMsg: failed to save contact: %v", err)
@@ -476,6 +484,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var batchCmds []tea.Cmd
 		if profileCmd := m.maybeRequestProfile(peer); profileCmd != nil {
 			batchCmds = append(batchCmds, profileCmd)
+		}
+		if newPeer {
+			batchCmds = append(batchCmds, publishContactsListCmd(m.pool, m.relays, contactsFromModel(m.dmPeers, m.profiles), m.keys, m.kr))
 		}
 		if m.dmEvents != nil {
 			batchCmds = append(batchCmds, waitForDMEvent(m.dmEvents, m.keys))
@@ -592,13 +603,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			log.Printf("groupMetaMsg: failed to update group name: %v", err)
 		}
 		m.updateViewport()
+		var metaCmds []tea.Cmd
+		metaCmds = append(metaCmds, publishSimpleGroupsListCmd(m.pool, m.relays, m.groups, m.keys))
 		// Only re-wait if this metadata came from the group subscription;
 		// edit commands also return groupMetaMsg but must not spawn extra waiters.
 		if msg.FromSub && m.groupEvents != nil {
 			subRelayURL, _ := splitGroupKey(m.groupSubKey)
-			return m, waitForGroupEvent(m.groupEvents, m.groupSubKey, subRelayURL, m.keys)
+			metaCmds = append(metaCmds, waitForGroupEvent(m.groupEvents, m.groupSubKey, subRelayURL, m.keys))
 		}
-		return m, nil
+		return m, tea.Batch(metaCmds...)
 
 	case groupCreatedMsg:
 		log.Printf("groupCreatedMsg: relay=%s group=%s name=%q", msg.RelayURL, msg.GroupID, msg.Name)
@@ -626,6 +639,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			editGroupMetadataCmd(m.pool, msg.RelayURL, msg.GroupID, map[string]string{"name": msg.Name}, m.groupRecentIDs[gk], m.keys),
 			// Default new groups to closed.
 			editGroupMetadataCmd(m.pool, msg.RelayURL, msg.GroupID, map[string]string{"closed": ""}, m.groupRecentIDs[gk], m.keys),
+			publishSimpleGroupsListCmd(m.pool, m.relays, m.groups, m.keys),
 		)
 
 	case groupInviteCreatedMsg:
@@ -658,6 +672,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			subscribeGroupCmd(m.pool, msg.RelayURL, msg.GroupID),
 			fetchGroupMetaCmd(m.pool, msg.RelayURL, msg.GroupID),
+			publishSimpleGroupsListCmd(m.pool, m.relays, m.groups, m.keys),
 		)
 
 	case profileResolvedMsg:
@@ -668,6 +683,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := UpdateContactName(m.cfgFlagPath, msg.PubKey, msg.DisplayName); err != nil {
 				log.Printf("profileResolvedMsg: failed to update contact name: %v", err)
 			}
+			m.updateViewport()
+			return m, publishContactsListCmd(m.pool, m.relays, contactsFromModel(m.dmPeers, m.profiles), m.keys, m.kr)
 		}
 		m.updateViewport()
 		return m, nil
@@ -696,6 +713,86 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case blossomUploadErrMsg:
 		m.addSystemMsg("upload failed: " + msg.Error())
+		return m, nil
+
+	case nip51ListsFetchedMsg:
+		log.Printf("nip51ListsFetchedMsg: contacts=%d (ts=%d) channels=%d (ts=%d) groups=%d (ts=%d)",
+			len(msg.contacts), msg.contactsTS, len(msg.channels), msg.channelsTS, len(msg.groups), msg.groupsTS)
+		var fetchCmds []tea.Cmd
+
+		// Contacts: if relay data is newer, replace in-memory state and rewrite cache.
+		if msg.contactsTS > m.contactsListTS && msg.contacts != nil {
+			m.contactsListTS = msg.contactsTS
+			m.dmPeers = nil
+			for _, c := range msg.contacts {
+				if !containsStr(m.dmPeers, c.PubKey) {
+					m.dmPeers = append(m.dmPeers, c.PubKey)
+				}
+				m.profiles[c.PubKey] = c.Name
+			}
+			if err := WriteContacts(m.cfgFlagPath, msg.contacts); err != nil {
+				log.Printf("nip51ListsFetchedMsg: write contacts cache: %v", err)
+			}
+			// Fetch profiles for any new contacts.
+			for _, c := range msg.contacts {
+				if cmd := m.maybeRequestProfile(c.PubKey); cmd != nil {
+					fetchCmds = append(fetchCmds, cmd)
+				}
+			}
+		}
+
+		// Channels: if relay data is newer, replace in-memory state and rewrite cache.
+		if msg.channelsTS > m.channelsListTS && msg.channels != nil {
+			m.channelsListTS = msg.channelsTS
+			m.channels = msg.channels
+			var rooms []Room
+			for _, ch := range msg.channels {
+				rooms = append(rooms, Room{Name: ch.Name, ID: ch.ID})
+			}
+			if err := WriteRooms(m.cfgFlagPath, rooms); err != nil {
+				log.Printf("nip51ListsFetchedMsg: write rooms cache: %v", err)
+			}
+			// Fetch metadata for channels with placeholder names.
+			for _, ch := range msg.channels {
+				fetchCmds = append(fetchCmds, fetchChannelMetaCmd(m.pool, m.relays, ch.ID))
+			}
+		}
+
+		// Groups: if relay data is newer, replace in-memory state and rewrite cache.
+		if msg.groupsTS > m.groupsListTS && msg.groups != nil {
+			m.groupsListTS = msg.groupsTS
+			m.groups = nil
+			var savedGroups []SavedGroup
+			for _, sg := range msg.groups {
+				m.groups = append(m.groups, Group{RelayURL: sg.RelayURL, GroupID: sg.GroupID, Name: sg.Name})
+				savedGroups = append(savedGroups, sg)
+			}
+			if err := WriteSavedGroups(m.cfgFlagPath, savedGroups); err != nil {
+				log.Printf("nip51ListsFetchedMsg: write groups cache: %v", err)
+			}
+			// Fetch metadata for groups.
+			for _, sg := range msg.groups {
+				fetchCmds = append(fetchCmds, fetchGroupMetaCmd(m.pool, sg.RelayURL, sg.GroupID))
+			}
+		}
+
+		// Clamp activeItem to valid range after list replacement.
+		total := m.sidebarTotal()
+		if total == 0 {
+			m.activeItem = 0
+		} else if m.activeItem >= total {
+			m.activeItem = total - 1
+		}
+		m.updateViewport()
+		if len(fetchCmds) > 0 {
+			return m, tea.Batch(fetchCmds...)
+		}
+		return m, nil
+
+	case nip51PublishResultMsg:
+		if msg.err != nil {
+			log.Printf("nip51PublishResultMsg: kind %d error: %v", msg.listKind, msg.err)
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -941,11 +1038,25 @@ func (m *model) updateSuggestions() {
 	switch {
 	case len(tokens) == 1 && !trailingSpace:
 		// Partial top-level command: /he → /help
-		commands := []string{"/create", "/join", "/dm", "/me", "/room", "/delete", "/group", "/invite", "/leave", "/help"}
+		commands := []string{"/channel", "/join", "/dm", "/me", "/room", "/delete", "/group", "/invite", "/leave", "/help"}
 		prefix := strings.ToLower(tokens[0])
 		for _, c := range commands {
 			if strings.HasPrefix(c, prefix) && c != prefix {
 				suggestions = append(suggestions, c)
+			}
+		}
+
+	case strings.ToLower(tokens[0]) == "/channel":
+		subcommands := []string{"create"}
+		switch {
+		case len(tokens) == 1 && trailingSpace:
+			suggestions = subcommands
+		case len(tokens) == 2 && !trailingSpace:
+			prefix := strings.ToLower(tokens[1])
+			for _, sc := range subcommands {
+				if strings.HasPrefix(sc, prefix) && sc != prefix {
+					suggestions = append(suggestions, sc)
+				}
 			}
 		}
 
@@ -1256,13 +1367,8 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 	}
 
 	switch cmd {
-	case "/create":
-		if arg == "" || !strings.HasPrefix(arg, "#") {
-			m.addSystemMsg("usage: /create #roomname")
-			return m, nil
-		}
-		name := strings.TrimPrefix(arg, "#")
-		return m, createChannelCmd(m.pool, m.relays, name, m.keys)
+	case "/channel":
+		return m.handleChannelCommand(arg)
 
 	case "/join":
 		if arg == "" {
@@ -1367,7 +1473,7 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		return m.leaveCurrentItem()
 
 	case "/help":
-		m.addSystemMsg("/create #name — create a NIP-28 channel")
+		m.addSystemMsg("/channel create #name — create a NIP-28 channel")
 		m.addSystemMsg("/join #name — join a channel from your rooms file")
 		m.addSystemMsg("/join <event-id> — join a channel by ID")
 		m.addSystemMsg("/join naddr1... [code] — join a NIP-29 group (with optional invite code)")
@@ -1395,6 +1501,34 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 }
 
 // handleGroupCommand handles /group subcommands.
+func (m *model) handleChannelCommand(arg string) (tea.Model, tea.Cmd) {
+	if arg == "" {
+		m.addSystemMsg("usage: /channel create #name")
+		return m, nil
+	}
+
+	parts := strings.SplitN(arg, " ", 2)
+	sub := strings.ToLower(parts[0])
+	subArg := ""
+	if len(parts) > 1 {
+		subArg = strings.TrimSpace(parts[1])
+	}
+
+	switch sub {
+	case "create":
+		if subArg == "" || !strings.HasPrefix(subArg, "#") {
+			m.addSystemMsg("usage: /channel create #name")
+			return m, nil
+		}
+		name := strings.TrimPrefix(subArg, "#")
+		log.Printf("handleCommand: /channel create #%s", name)
+		return m, createChannelCmd(m.pool, m.relays, name, m.keys)
+	default:
+		m.addSystemMsg("unknown subcommand: /channel " + sub)
+		return m, nil
+	}
+}
+
 func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 	if arg == "" {
 		m.addSystemMsg("usage: /group create <name> <relay> | set open|closed | user add <pubkey> | name <new-name> | about <text> | picture <url>")
@@ -1488,7 +1622,10 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 			log.Printf("/group name: failed to save: %v", err)
 		}
 		m.updateViewport()
-		return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"name": subArg}, m.groupRecentIDs[gk], m.keys)
+		return m, tea.Batch(
+			editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"name": subArg}, m.groupRecentIDs[gk], m.keys),
+			publishSimpleGroupsListCmd(m.pool, m.relays, m.groups, m.keys),
+		)
 
 	case "about":
 		// /group about <text>
@@ -1661,7 +1798,9 @@ func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
 		pk = decoded.(string)
 	}
 
+	newPeer := false
 	if !containsStr(m.dmPeers, pk) {
+		newPeer = true
 		m.dmPeers = append(m.dmPeers, pk)
 		if err := AppendContact(m.cfgFlagPath, Contact{Name: m.resolveAuthor(pk), PubKey: pk}); err != nil {
 			log.Printf("openDM: failed to save contact: %v", err)
@@ -1675,6 +1814,9 @@ func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.updateViewport()
+	if newPeer {
+		return m, publishContactsListCmd(m.pool, m.relays, contactsFromModel(m.dmPeers, m.profiles), m.keys, m.kr)
+	}
 	return m, nil
 }
 
@@ -1710,6 +1852,7 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 			log.Printf("leaveCurrentItem: failed to remove room: %v", err)
 		}
 
+		leaveCmds = append(leaveCmds, publishPublicChatsListCmd(m.pool, m.relays, m.channels, m.keys))
 		log.Printf("leaveCurrentItem: left channel #%s", ch.Name)
 	} else if m.isGroupSelected() && len(m.groups) > 0 {
 		idx := m.activeGroupIdx()
@@ -1739,6 +1882,7 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 		// Clean up recent IDs tracking.
 		delete(m.groupRecentIDs, gk)
 
+		leaveCmds = append(leaveCmds, publishSimpleGroupsListCmd(m.pool, m.relays, m.groups, m.keys))
 		log.Printf("leaveCurrentItem: left group ~%s", g.Name)
 	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
 		idx := m.activeDMPeerIdx()
@@ -1753,6 +1897,7 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 			log.Printf("leaveCurrentItem: failed to remove contact: %v", err)
 		}
 
+		leaveCmds = append(leaveCmds, publishContactsListCmd(m.pool, m.relays, contactsFromModel(m.dmPeers, m.profiles), m.keys, m.kr))
 		log.Printf("leaveCurrentItem: left DM with %s", m.resolveAuthor(peer))
 	}
 
