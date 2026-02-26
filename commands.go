@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
@@ -337,6 +338,10 @@ func (m *model) inviteToGroup(input string) (tea.Model, tea.Cmd) {
 		}
 		pk = decoded.(nostr.PubKey).Hex()
 	} else if len(input) == 64 {
+		if _, err := hex.DecodeString(input); err != nil {
+			m.addSystemMsg("invalid hex pubkey")
+			return m, nil
+		}
 		pk = input
 	} else {
 		// Look up by display name in profiles (case-insensitive).

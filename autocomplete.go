@@ -30,11 +30,6 @@ func (m *model) updateSuggestions() {
 	}
 
 	tokens := strings.Fields(text)
-	if len(tokens) == 0 {
-		m.acSuggestions = nil
-		m.acIndex = 0
-		return
-	}
 
 	// If input ends with a space, the user is starting a new token.
 	trailingSpace := len(text) > 0 && text[len(text)-1] == ' '
@@ -207,6 +202,9 @@ func (m *model) acceptSuggestion() {
 
 // viewAutocomplete renders suggestions as a horizontal row.
 func (m *model) viewAutocomplete() string {
+	if len(m.acSuggestions) == 0 {
+		return ""
+	}
 	maxWidth := m.viewport.Width
 
 	// Pre-render all items so we know their widths.

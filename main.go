@@ -91,6 +91,7 @@ func main() {
 	// background-color query (OSC 11) completes while stdio is still normal.
 	// Detect style once, store it for re-creation on resize.
 	mdStyle := detectGlamourStyle()
+	initAuthorColors()
 	mdRender := newMarkdownRenderer(mdStyle)
 
 	kr := keyer.NewPlainKeySigner(keys.SK)

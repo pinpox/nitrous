@@ -55,7 +55,7 @@ func (m *model) sidebarItemAt(y int) (int, bool) {
 func (m *model) sidebarWidth() int {
 	longest := 0
 	for _, it := range m.sidebar {
-		if n := len(it.DisplayName()); n > longest {
+		if n := lipgloss.Width(it.DisplayName()); n > longest {
 			longest = n
 		}
 	}
@@ -143,6 +143,9 @@ func (m *model) updateViewport() {
 		prefixW := lipgloss.Width(prefix)
 		pad := strings.Repeat(" ", prefixW)
 		wrapWidth := m.viewport.Width - prefixW
+		if wrapWidth < 1 {
+			wrapWidth = 1
+		}
 		// Trim leading/trailing blank lines from glamour output.
 		// strings.TrimSpace can't handle ANSI codes, and lipgloss.Width
 		// counts indentation spaces as visible. Strip ANSI first, then
@@ -211,8 +214,8 @@ func (m *model) viewSidebar() string {
 			break
 		}
 		name := it.Prefix() + it.DisplayName()
-		if len(name) > sw-2 {
-			name = name[:sw-2]
+		if lipgloss.Width(name) > sw-2 {
+			name = ansi.Truncate(name, sw-2, "")
 		}
 		if i == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))
@@ -230,8 +233,8 @@ func (m *model) viewSidebar() string {
 			continue
 		}
 		name := it.Prefix() + it.DisplayName()
-		if len(name) > sw-2 {
-			name = name[:sw-2]
+		if lipgloss.Width(name) > sw-2 {
+			name = ansi.Truncate(name, sw-2, "")
 		}
 		if i == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))
@@ -249,8 +252,8 @@ func (m *model) viewSidebar() string {
 			continue
 		}
 		name := it.Prefix() + it.DisplayName()
-		if len(name) > sw-2 {
-			name = name[:sw-2]
+		if lipgloss.Width(name) > sw-2 {
+			name = ansi.Truncate(name, sw-2, "")
 		}
 		if i == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))

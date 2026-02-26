@@ -63,6 +63,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleBlossomUploadErr(msg)
 	case nip51ListsFetchedMsg:
 		return m.handleNIP51ListsFetched(msg)
+	case profilePublishedMsg:
+		return m.handleProfilePublished(msg)
+	case dmRelaysPublishedMsg:
+		return m.handleDMRelaysPublished(msg)
 	case nip51PublishResultMsg:
 		return m.handleNIP51PublishResult(msg)
 	case tea.KeyMsg:
@@ -565,6 +569,20 @@ func (m *model) handleNIP51ListsFetched(msg nip51ListsFetchedMsg) (tea.Model, te
 	m.updateViewport()
 	if len(fetchCmds) > 0 {
 		return m, tea.Batch(fetchCmds...)
+	}
+	return m, nil
+}
+
+func (m *model) handleProfilePublished(msg profilePublishedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		log.Printf("profilePublishedMsg: error: %v", msg.err)
+	}
+	return m, nil
+}
+
+func (m *model) handleDMRelaysPublished(msg dmRelaysPublishedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		log.Printf("dmRelaysPublishedMsg: error: %v", msg.err)
 	}
 	return m, nil
 }

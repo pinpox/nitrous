@@ -176,12 +176,17 @@ func buildProfileEvent(profile ProfileConfig, keys Keys) (nostr.Event, error) {
 	return evt, nil
 }
 
+// profilePublishedMsg is returned after publishing a kind-0 profile event.
+type profilePublishedMsg struct {
+	err error
+}
+
 // publishProfileCmd publishes a kind-0 event with the user's profile metadata.
 func publishProfileCmd(pool *nostr.Pool, relays []string, profile ProfileConfig, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildProfileEvent(profile, keys)
 		if err != nil {
-			return nostrErrMsg{fmt.Errorf("publishProfile: %w", err)}
+			return profilePublishedMsg{err: fmt.Errorf("publishProfile: %w", err)}
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -190,7 +195,7 @@ func publishProfileCmd(pool *nostr.Pool, relays []string, profile ProfileConfig,
 			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
 			log.Printf("publishProfile: published kind 0")
 		}()
-		return nil
+		return profilePublishedMsg{}
 	}
 }
 

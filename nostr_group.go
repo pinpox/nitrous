@@ -120,43 +120,44 @@ func subscribeGroupCmd(pool *nostr.Pool, relayURL, groupID string) tea.Cmd {
 // Returns groupMetaMsg for kind 39000 metadata events and groupEventMsg for chat messages.
 func waitForGroupEvent(events <-chan nostr.RelayEvent, gk string, relayURL string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
-		re, ok := <-events
-		if !ok {
-			return groupSubEndedMsg{groupKey: gk}
-		}
+		for {
+			re, ok := <-events
+			if !ok {
+				return groupSubEndedMsg{groupKey: gk}
+			}
 
-		// Handle metadata events (kind 39000) — extract group name from tags.
-		if re.Kind == nostr.KindSimpleGroupMetadata {
-			groupID := ""
-			name := ""
-			for _, tag := range re.Tags {
-				if len(tag) >= 2 {
-					switch tag[0] {
-					case "d":
-						groupID = tag[1]
-					case "name":
-						name = tag[1]
+			// Handle metadata events (kind 39000) — extract group name from tags.
+			if re.Kind == nostr.KindSimpleGroupMetadata {
+				groupID := ""
+				name := ""
+				for _, tag := range re.Tags {
+					if len(tag) >= 2 {
+						switch tag[0] {
+						case "d":
+							groupID = tag[1]
+						case "name":
+							name = tag[1]
+						}
 					}
 				}
+				if name != "" && groupID != "" {
+					log.Printf("waitForGroupEvent: got metadata for group %s: name=%q", groupID, name)
+					return groupMetaMsg{RelayURL: relayURL, GroupID: groupID, Name: name, RelayPubKey: re.PubKey.Hex(), FromSub: true}
+				}
+				log.Printf("waitForGroupEvent: got metadata event but no usable name, skipping")
+				continue
 			}
-			if name != "" && groupID != "" {
-				log.Printf("waitForGroupEvent: got metadata for group %s: name=%q", groupID, name)
-				return groupMetaMsg{RelayURL: relayURL, GroupID: groupID, Name: name, RelayPubKey: re.PubKey.Hex(), FromSub: true}
-			}
-			log.Printf("waitForGroupEvent: got metadata event but no usable name, skipping")
-			// Re-wait for next event rather than surfacing an empty metadata msg.
-			return waitForGroupEvent(events, gk, relayURL, keys)()
-		}
 
-		return groupEventMsg(ChatMessage{
-			Author:    shortPK(re.PubKey.Hex()),
-			PubKey:    re.PubKey.Hex(),
-			Content:   re.Content,
-			Timestamp: re.CreatedAt,
-			EventID:   re.ID.Hex(),
-			GroupKey:  gk,
-			IsMine:    re.PubKey == keys.PK,
-		})
+			return groupEventMsg(ChatMessage{
+				Author:    shortPK(re.PubKey.Hex()),
+				PubKey:    re.PubKey.Hex(),
+				Content:   re.Content,
+				Timestamp: re.CreatedAt,
+				EventID:   re.ID.Hex(),
+				GroupKey:  gk,
+				IsMine:    re.PubKey == keys.PK,
+			})
+		}
 	}
 }
 
@@ -341,7 +342,10 @@ func parseGroupInput(input string) (string, string, error) {
 		if prefix != "naddr" {
 			return "", "", fmt.Errorf("expected naddr, got %s", prefix)
 		}
-		ep := data.(nostr.EntityPointer)
+		ep, ok := data.(nostr.EntityPointer)
+		if !ok {
+			return "", "", fmt.Errorf("naddr data is not an EntityPointer")
+		}
 		if len(ep.Relays) == 0 {
 			return "", "", fmt.Errorf("naddr has no relay")
 		}

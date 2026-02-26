@@ -121,9 +121,13 @@ func LoadRooms(cfgFlagPath string) ([]Room, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		parts := strings.SplitN(line, " ", 2)
+		parts := strings.SplitN(line, "\t", 2)
 		if len(parts) != 2 {
-			continue
+			// Fall back to space delimiter for old format.
+			parts = strings.SplitN(line, " ", 2)
+			if len(parts) != 2 {
+				continue
+			}
 		}
 		name := strings.TrimSpace(parts[0])
 		id := strings.TrimSpace(parts[1])
@@ -175,7 +179,7 @@ func AppendRoom(cfgFlagPath string, room Room) error {
 		return err
 	}
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s %s\n", room.Name, room.ID)
+	_, err = fmt.Fprintf(f, "%s\t%s\n", room.Name, room.ID)
 	return err
 }
 
@@ -183,8 +187,8 @@ func AppendRoom(cfgFlagPath string, room Room) error {
 // If the room doesn't exist, it appends it.
 func UpdateRoomName(cfgFlagPath string, id, newName string) error {
 	rooms, err := LoadRooms(cfgFlagPath)
-	if err != nil {
-		rooms = nil
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	found := false
 	for i, r := range rooms {
@@ -221,7 +225,7 @@ func RemoveRoom(cfgFlagPath string, id string) error {
 	path := roomsPath(cfgFlagPath)
 	var lines []string
 	for _, r := range kept {
-		lines = append(lines, fmt.Sprintf("%s %s", r.Name, r.ID))
+		lines = append(lines, fmt.Sprintf("%s\t%s", r.Name, r.ID))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
@@ -258,9 +262,13 @@ func LoadContacts(cfgFlagPath string) ([]Contact, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		parts := strings.SplitN(line, " ", 2)
+		parts := strings.SplitN(line, "\t", 2)
 		if len(parts) != 2 {
-			continue
+			// Fall back to space delimiter for old format.
+			parts = strings.SplitN(line, " ", 2)
+			if len(parts) != 2 {
+				continue
+			}
 		}
 		name := strings.TrimSpace(parts[0])
 		pk := strings.TrimSpace(parts[1])
@@ -273,7 +281,10 @@ func LoadContacts(cfgFlagPath string) ([]Contact, error) {
 
 // AppendContact adds a contact to the contacts file if not already present.
 func AppendContact(cfgFlagPath string, contact Contact) error {
-	existing, _ := LoadContacts(cfgFlagPath)
+	existing, err := LoadContacts(cfgFlagPath)
+	if err != nil {
+		return err
+	}
 	for _, c := range existing {
 		if c.PubKey == contact.PubKey {
 			return nil
@@ -289,7 +300,7 @@ func AppendContact(cfgFlagPath string, contact Contact) error {
 		return err
 	}
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s %s\n", contact.Name, contact.PubKey)
+	_, err = fmt.Fprintf(f, "%s\t%s\n", contact.Name, contact.PubKey)
 	return err
 }
 
@@ -311,7 +322,7 @@ func RemoveContact(cfgFlagPath string, pubkey string) error {
 	path := contactsPath(cfgFlagPath)
 	var lines []string
 	for _, c := range kept {
-		lines = append(lines, fmt.Sprintf("%s %s", c.Name, c.PubKey))
+		lines = append(lines, fmt.Sprintf("%s\t%s", c.Name, c.PubKey))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
@@ -349,9 +360,13 @@ func LoadSavedGroups(cfgFlagPath string) ([]SavedGroup, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		parts := strings.SplitN(line, " ", 3)
+		parts := strings.SplitN(line, "\t", 3)
 		if len(parts) != 3 {
-			continue
+			// Fall back to space delimiter for old format.
+			parts = strings.SplitN(line, " ", 3)
+			if len(parts) != 3 {
+				continue
+			}
 		}
 		name := strings.TrimSpace(parts[0])
 		relayURL := strings.TrimSpace(parts[1])
@@ -365,7 +380,10 @@ func LoadSavedGroups(cfgFlagPath string) ([]SavedGroup, error) {
 
 // AppendSavedGroup adds a group to the groups file if not already present.
 func AppendSavedGroup(cfgFlagPath string, group SavedGroup) error {
-	existing, _ := LoadSavedGroups(cfgFlagPath)
+	existing, err := LoadSavedGroups(cfgFlagPath)
+	if err != nil {
+		return err
+	}
 	for _, g := range existing {
 		if g.RelayURL == group.RelayURL && g.GroupID == group.GroupID {
 			return nil
@@ -381,7 +399,7 @@ func AppendSavedGroup(cfgFlagPath string, group SavedGroup) error {
 		return err
 	}
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s %s %s\n", group.Name, group.RelayURL, group.GroupID)
+	_, err = fmt.Fprintf(f, "%s\t%s\t%s\n", group.Name, group.RelayURL, group.GroupID)
 	return err
 }
 
@@ -403,7 +421,7 @@ func RemoveSavedGroup(cfgFlagPath string, relayURL, groupID string) error {
 	path := groupsPath(cfgFlagPath)
 	var lines []string
 	for _, g := range kept {
-		lines = append(lines, fmt.Sprintf("%s %s %s", g.Name, g.RelayURL, g.GroupID))
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", g.Name, g.RelayURL, g.GroupID))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
@@ -430,7 +448,7 @@ func UpdateSavedGroupName(cfgFlagPath string, relayURL, groupID, newName string)
 	path := groupsPath(cfgFlagPath)
 	var lines []string
 	for _, g := range groups {
-		lines = append(lines, fmt.Sprintf("%s %s %s", g.Name, g.RelayURL, g.GroupID))
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", g.Name, g.RelayURL, g.GroupID))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
@@ -444,7 +462,7 @@ func WriteContacts(cfgFlagPath string, contacts []Contact) error {
 	}
 	var lines []string
 	for _, c := range contacts {
-		lines = append(lines, fmt.Sprintf("%s %s", c.Name, c.PubKey))
+		lines = append(lines, fmt.Sprintf("%s\t%s", c.Name, c.PubKey))
 	}
 	data := ""
 	if len(lines) > 0 {
@@ -462,7 +480,7 @@ func WriteRooms(cfgFlagPath string, rooms []Room) error {
 	}
 	var lines []string
 	for _, r := range rooms {
-		lines = append(lines, fmt.Sprintf("%s %s", r.Name, r.ID))
+		lines = append(lines, fmt.Sprintf("%s\t%s", r.Name, r.ID))
 	}
 	data := ""
 	if len(lines) > 0 {
@@ -480,7 +498,7 @@ func WriteSavedGroups(cfgFlagPath string, groups []SavedGroup) error {
 	}
 	var lines []string
 	for _, g := range groups {
-		lines = append(lines, fmt.Sprintf("%s %s %s", g.Name, g.RelayURL, g.GroupID))
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", g.Name, g.RelayURL, g.GroupID))
 	}
 	data := ""
 	if len(lines) > 0 {
@@ -512,7 +530,7 @@ func UpdateContactName(cfgFlagPath string, pubkey, newName string) error {
 	path := contactsPath(cfgFlagPath)
 	var lines []string
 	for _, c := range contacts {
-		lines = append(lines, fmt.Sprintf("%s %s", c.Name, c.PubKey))
+		lines = append(lines, fmt.Sprintf("%s\t%s", c.Name, c.PubKey))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }

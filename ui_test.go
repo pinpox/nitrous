@@ -5,6 +5,7 @@ import (
 )
 
 func TestColorForPubkey(t *testing.T) {
+	initAuthorColors()
 	t.Run("deterministic", func(t *testing.T) {
 		pk := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 		c1 := colorForPubkey(pk)
