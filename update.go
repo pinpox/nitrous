@@ -90,10 +90,9 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	case tea.MouseButtonLeft:
 		if msg.Action == tea.MouseActionPress && msg.X < m.sidebarWidth() {
 			if idx, ok := m.sidebarItemAt(msg.Y); ok {
-				prev := m.activeItem
 				m.activeItem = idx
+				m.clearUnread()
 				m.updateViewport()
-				return m, m.subscribeIfNeeded(prev)
 			}
 		}
 		return m, nil
@@ -130,10 +129,12 @@ func (m *model) handleChannelMeta(msg channelMetaMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) handleChannelSubStarted(msg channelSubStartedMsg) (tea.Model, tea.Cmd) {
-	log.Println("channelSubStartedMsg received")
-	m.cancelRoomSub()
-	m.roomSub = &roomSub{kind: SidebarChannel, roomID: msg.channelID, events: msg.events, cancel: msg.cancel}
-	return m, m.waitForRoomEvent()
+	log.Printf("channelSubStartedMsg: channel=%s", shortPK(msg.channelID))
+	// Cancel any existing subscription for this channel (e.g. reconnect).
+	m.cancelRoomSub(msg.channelID)
+	sub := &roomSub{kind: SidebarChannel, roomID: msg.channelID, events: msg.events, cancel: msg.cancel}
+	m.roomSubs[msg.channelID] = sub
+	return m, waitForRoomSub(sub, m.keys)
 }
 
 func (m *model) handleDMSubStarted(msg dmSubStartedMsg) (tea.Model, tea.Cmd) {
@@ -149,11 +150,9 @@ func (m *model) handleDMSubStarted(msg dmSubStartedMsg) (tea.Model, tea.Cmd) {
 func (m *model) handleChannelEvent(msg channelEventMsg) (tea.Model, tea.Cmd) {
 	cm := ChatMessage(msg)
 	log.Printf("channelEventMsg: author=%s channel=%s id=%s", cm.Author, cm.ChannelID, cm.EventID)
+	sub := m.roomSubs[cm.ChannelID]
 	if m.seenEvents[cm.EventID] {
-		if m.roomSub != nil {
-			return m, m.waitForRoomEvent()
-		}
-		return m, nil
+		return m, waitForRoomSub(sub, m.keys)
 	}
 	m.seenEvents[cm.EventID] = true
 	chID := cm.ChannelID
@@ -167,9 +166,7 @@ func (m *model) handleChannelEvent(msg channelEventMsg) (tea.Model, tea.Cmd) {
 	if profileCmd := m.maybeRequestProfile(cm.PubKey); profileCmd != nil {
 		batchCmds = append(batchCmds, profileCmd)
 	}
-	if m.roomSub != nil {
-		batchCmds = append(batchCmds, m.waitForRoomEvent())
-	}
+	batchCmds = append(batchCmds, waitForRoomSub(sub, m.keys))
 	return m, tea.Batch(batchCmds...)
 }
 
@@ -247,43 +244,51 @@ func (m *model) handleDMReconnect(msg dmReconnectMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) handleChannelSubEnded(msg channelSubEndedMsg) (tea.Model, tea.Cmd) {
-	log.Printf("channelSubEndedMsg: channel %s subscription ended, scheduling reconnect", shortPK(msg.channelID))
-	m.roomSub = nil
-	if msg.channelID == m.activeChannelID() {
-		m.addSystemMsg("channel subscription lost, reconnecting...")
+	log.Printf("channelSubEndedMsg: channel %s subscription ended", shortPK(msg.channelID))
+	// Ignore stale messages from a previously canceled subscription.
+	if _, ok := m.roomSubs[msg.channelID]; !ok {
+		log.Printf("channelSubEndedMsg: ignoring stale message for %s", shortPK(msg.channelID))
+		return m, nil
 	}
+	delete(m.roomSubs, msg.channelID)
 	return m, channelReconnectDelayCmd(msg.channelID)
 }
 
 func (m *model) handleChannelReconnect(msg channelReconnectMsg) (tea.Model, tea.Cmd) {
 	log.Printf("channelReconnectMsg: reconnecting channel %s", shortPK(msg.channelID))
-	if msg.channelID == m.activeChannelID() {
+	// Don't resubscribe if we already have an active subscription.
+	if _, ok := m.roomSubs[msg.channelID]; ok {
+		log.Printf("channelReconnectMsg: already subscribed to %s, skipping", shortPK(msg.channelID))
+		return m, nil
+	}
+	// Only reconnect if the channel is still in the sidebar.
+	if m.findChannelIdx(msg.channelID) >= 0 {
 		return m, subscribeChannelCmd(m.pool, m.relays, msg.channelID)
 	}
 	return m, nil
 }
 
 func (m *model) handleGroupSubStarted(msg groupSubStartedMsg) (tea.Model, tea.Cmd) {
-	log.Println("groupSubStartedMsg received")
-	m.cancelRoomSub()
-	m.roomSub = &roomSub{kind: SidebarGroup, roomID: msg.groupKey, events: msg.events, cancel: msg.cancel}
+	log.Printf("groupSubStartedMsg: group=%s", msg.groupKey)
+	// Cancel any existing subscription for this group (e.g. reconnect).
+	m.cancelRoomSub(msg.groupKey)
+	sub := &roomSub{kind: SidebarGroup, roomID: msg.groupKey, events: msg.events, cancel: msg.cancel}
+	m.roomSubs[msg.groupKey] = sub
 	if _, ok := m.groupRecentIDs[msg.groupKey]; !ok {
 		m.groupRecentIDs[msg.groupKey] = nil
 	}
-	return m, m.waitForRoomEvent()
+	return m, waitForRoomSub(sub, m.keys)
 }
 
 func (m *model) handleGroupEvent(msg groupEventMsg) (tea.Model, tea.Cmd) {
 	cm := ChatMessage(msg)
 	log.Printf("groupEventMsg: author=%s group=%s id=%s", cm.Author, cm.GroupKey, cm.EventID)
+	gk := cm.GroupKey
+	sub := m.roomSubs[gk]
 	if m.seenEvents[cm.EventID] {
-		if m.roomSub != nil {
-			return m, m.waitForRoomEvent()
-		}
-		return m, nil
+		return m, waitForRoomSub(sub, m.keys)
 	}
 	m.seenEvents[cm.EventID] = true
-	gk := cm.GroupKey
 	// Track recent event IDs for NIP-29 "previous" tags.
 	ids := m.groupRecentIDs[gk]
 	ids = append(ids, cm.EventID)
@@ -301,29 +306,32 @@ func (m *model) handleGroupEvent(msg groupEventMsg) (tea.Model, tea.Cmd) {
 	if profileCmd := m.maybeRequestProfile(cm.PubKey); profileCmd != nil {
 		batchCmds = append(batchCmds, profileCmd)
 	}
-	if m.roomSub != nil {
-		batchCmds = append(batchCmds, m.waitForRoomEvent())
-	}
+	batchCmds = append(batchCmds, waitForRoomSub(sub, m.keys))
 	return m, tea.Batch(batchCmds...)
 }
 
 func (m *model) handleGroupSubEnded(msg groupSubEndedMsg) (tea.Model, tea.Cmd) {
-	log.Printf("groupSubEndedMsg: group %s subscription ended, scheduling reconnect", msg.groupKey)
-	m.roomSub = nil
-	if msg.groupKey == m.activeGroupKey() {
-		m.addSystemMsg("group subscription lost, reconnecting...")
+	log.Printf("groupSubEndedMsg: group %s subscription ended", msg.groupKey)
+	// Ignore stale messages from a previously canceled subscription.
+	if _, ok := m.roomSubs[msg.groupKey]; !ok {
+		log.Printf("groupSubEndedMsg: ignoring stale message for %s", msg.groupKey)
+		return m, nil
 	}
+	delete(m.roomSubs, msg.groupKey)
 	return m, groupReconnectDelayCmd(msg.groupKey)
 }
 
 func (m *model) handleGroupReconnect(msg groupReconnectMsg) (tea.Model, tea.Cmd) {
 	log.Printf("groupReconnectMsg: reconnecting group %s", msg.groupKey)
-	if msg.groupKey == m.activeGroupKey() {
-		if item := m.activeSidebarItem(); item != nil {
-			if gi, ok := item.(GroupItem); ok {
-				return m, subscribeGroupCmd(m.pool, gi.Group.RelayURL, gi.Group.GroupID)
-			}
-		}
+	// Don't resubscribe if we already have an active subscription.
+	if _, ok := m.roomSubs[msg.groupKey]; ok {
+		log.Printf("groupReconnectMsg: already subscribed to %s, skipping", msg.groupKey)
+		return m, nil
+	}
+	// Only reconnect if the group is still in the sidebar.
+	relayURL, groupID := splitGroupKey(msg.groupKey)
+	if m.findGroupIdx(relayURL, groupID) >= 0 {
+		return m, subscribeGroupCmd(m.pool, relayURL, groupID)
 	}
 	return m, nil
 }
@@ -342,8 +350,11 @@ func (m *model) handleGroupMeta(msg groupMetaMsg) (tea.Model, tea.Cmd) {
 	metaCmds = append(metaCmds, publishSimpleGroupsListCmd(m.pool, m.relays, m.allGroups(), m.keys))
 	// Only re-wait if this metadata came from the group subscription;
 	// edit commands also return groupMetaMsg but must not spawn extra waiters.
-	if msg.FromSub && m.roomSub != nil {
-		metaCmds = append(metaCmds, m.waitForRoomEvent())
+	if msg.FromSub {
+		gk := groupKey(msg.RelayURL, msg.GroupID)
+		if sub, ok := m.roomSubs[gk]; ok {
+			metaCmds = append(metaCmds, waitForRoomSub(sub, m.keys))
+		}
 	}
 	return m, tea.Batch(metaCmds...)
 }
@@ -483,6 +494,16 @@ func (m *model) handleNIP51ListsFetched(msg nip51ListsFetchedMsg) (tea.Model, te
 	// Channels: if relay data is newer, replace in-memory state and rewrite cache.
 	if msg.channelsTS > m.channelsListTS && msg.channels != nil {
 		m.channelsListTS = msg.channelsTS
+		// Cancel subs for channels no longer in the list.
+		newIDs := make(map[string]bool, len(msg.channels))
+		for _, ch := range msg.channels {
+			newIDs[ch.ID] = true
+		}
+		for _, ch := range m.allChannels() {
+			if !newIDs[ch.ID] {
+				m.cancelRoomSub(ch.ID)
+			}
+		}
 		m.replaceChannels(msg.channels)
 		var rooms []Room
 		for _, ch := range msg.channels {
@@ -491,8 +512,11 @@ func (m *model) handleNIP51ListsFetched(msg nip51ListsFetchedMsg) (tea.Model, te
 		if err := WriteRooms(m.cfgFlagPath, rooms); err != nil {
 			log.Printf("nip51ListsFetchedMsg: write rooms cache: %v", err)
 		}
-		// Fetch metadata for channels with placeholder names.
+		// Subscribe to new channels and fetch metadata.
 		for _, ch := range msg.channels {
+			if _, ok := m.roomSubs[ch.ID]; !ok {
+				fetchCmds = append(fetchCmds, subscribeChannelCmd(m.pool, m.relays, ch.ID))
+			}
 			fetchCmds = append(fetchCmds, fetchChannelMetaCmd(m.pool, m.relays, ch.ID))
 		}
 	}
@@ -500,6 +524,17 @@ func (m *model) handleNIP51ListsFetched(msg nip51ListsFetchedMsg) (tea.Model, te
 	// Groups: if relay data is newer, replace in-memory state and rewrite cache.
 	if msg.groupsTS > m.groupsListTS && msg.groups != nil {
 		m.groupsListTS = msg.groupsTS
+		// Cancel subs for groups no longer in the list.
+		newGKs := make(map[string]bool, len(msg.groups))
+		for _, sg := range msg.groups {
+			newGKs[groupKey(sg.RelayURL, sg.GroupID)] = true
+		}
+		for _, g := range m.allGroups() {
+			gk := groupKey(g.RelayURL, g.GroupID)
+			if !newGKs[gk] {
+				m.cancelRoomSub(gk)
+			}
+		}
 		var groups []Group
 		var savedGroups []SavedGroup
 		for _, sg := range msg.groups {
@@ -510,8 +545,12 @@ func (m *model) handleNIP51ListsFetched(msg nip51ListsFetchedMsg) (tea.Model, te
 		if err := WriteSavedGroups(m.cfgFlagPath, savedGroups); err != nil {
 			log.Printf("nip51ListsFetchedMsg: write groups cache: %v", err)
 		}
-		// Fetch metadata for groups.
+		// Subscribe to new groups and fetch metadata.
 		for _, sg := range msg.groups {
+			gk := groupKey(sg.RelayURL, sg.GroupID)
+			if _, ok := m.roomSubs[gk]; !ok {
+				fetchCmds = append(fetchCmds, subscribeGroupCmd(m.pool, sg.RelayURL, sg.GroupID))
+			}
 			fetchCmds = append(fetchCmds, fetchGroupMetaCmd(m.pool, sg.RelayURL, sg.GroupID))
 		}
 	}
@@ -541,7 +580,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Dismiss QR overlay on any key (except ctrl+c which still quits).
 	if m.qrOverlay != "" {
 		if msg.String() == "ctrl+c" {
-			m.cancelRoomSub()
+			m.cancelAllRoomSubs()
 			if m.dmCancel != nil {
 				m.dmCancel()
 			}
@@ -622,7 +661,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+c":
-		m.cancelRoomSub()
+		m.cancelAllRoomSubs()
 		if m.dmCancel != nil {
 			m.dmCancel()
 		}
@@ -631,26 +670,24 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+up":
 		total := m.sidebarTotal()
 		if total > 1 {
-			prev := m.activeItem
 			m.activeItem--
 			if m.activeItem < 0 {
 				m.activeItem = total - 1
 			}
+			m.clearUnread()
 			m.updateViewport()
-			return m, m.subscribeIfNeeded(prev)
 		}
 		return m, nil
 
 	case "ctrl+down":
 		total := m.sidebarTotal()
 		if total > 1 {
-			prev := m.activeItem
 			m.activeItem++
 			if m.activeItem >= total {
 				m.activeItem = 0
 			}
+			m.clearUnread()
 			m.updateViewport()
-			return m, m.subscribeIfNeeded(prev)
 		}
 		return m, nil
 

@@ -252,7 +252,7 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 				m.addSystemMsg("invalid npub")
 				return m, nil
 			}
-			pk = decoded.(string)
+			pk = decoded.(nostr.PubKey).Hex()
 		}
 		gi := m.activeSidebarItem().(GroupItem)
 		g := gi.Group
@@ -335,7 +335,7 @@ func (m *model) inviteToGroup(input string) (tea.Model, tea.Cmd) {
 			m.addSystemMsg("invalid npub")
 			return m, nil
 		}
-		pk = decoded.(string)
+		pk = decoded.(nostr.PubKey).Hex()
 	} else if len(input) == 64 {
 		pk = input
 	} else {
@@ -452,7 +452,7 @@ func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
 			m.addSystemMsg("invalid npub")
 			return m, nil
 		}
-		pk = decoded.(string)
+		pk = decoded.(nostr.PubKey).Hex()
 	}
 
 	newPeer := false
@@ -495,10 +495,8 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 	case ChannelItem:
 		ch := it.Channel
 
-		// Cancel subscription if this is the active one.
-		if m.roomSub != nil && m.roomSub.roomID == ch.ID {
-			m.cancelRoomSub()
-		}
+		// Cancel subscription for this channel.
+		m.cancelRoomSub(ch.ID)
 
 		// Remove from sidebar and message history.
 		m.removeSidebarItem(m.activeItem)
@@ -516,10 +514,8 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 		g := it.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
 
-		// Cancel subscription if this is the active one.
-		if m.roomSub != nil && m.roomSub.roomID == gk {
-			m.cancelRoomSub()
-		}
+		// Cancel subscription for this group.
+		m.cancelRoomSub(gk)
 
 		// Remove from sidebar and message history.
 		m.removeSidebarItem(m.activeItem)

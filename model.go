@@ -43,8 +43,8 @@ type model struct {
 	activeItem int
 	sidebar    []SidebarItem
 
-	// Per-room subscription (channel or group); nil when none is active.
-	roomSub *roomSub
+	// Per-room subscriptions — all channels and groups are subscribed simultaneously.
+	roomSubs map[string]*roomSub
 
 	// NIP-29 Group recent event IDs (per-group ring buffer, max 50)
 	groupRecentIDs map[string][]string
@@ -103,7 +103,7 @@ type model struct {
 	groupsListTS   nostr.Timestamp
 }
 
-// roomSub holds the active per-room subscription (channel or group).
+// roomSub holds a per-room subscription (channel or group).
 type roomSub struct {
 	kind   SidebarKind
 	roomID string // channel ID or groupKey
@@ -111,26 +111,34 @@ type roomSub struct {
 	cancel context.CancelFunc
 }
 
-// waitForRoomEvent returns a Cmd that waits for the next event on the active room subscription.
-func (m *model) waitForRoomEvent() tea.Cmd {
-	if m.roomSub == nil {
+// waitForRoomSub returns a Cmd that waits for the next event on a specific room subscription.
+func waitForRoomSub(sub *roomSub, keys Keys) tea.Cmd {
+	if sub == nil {
 		return nil
 	}
-	switch m.roomSub.kind {
+	switch sub.kind {
 	case SidebarChannel:
-		return waitForChannelEvent(m.roomSub.events, m.roomSub.roomID, m.keys)
+		return waitForChannelEvent(sub.events, sub.roomID, keys)
 	case SidebarGroup:
-		relayURL, _ := splitGroupKey(m.roomSub.roomID)
-		return waitForGroupEvent(m.roomSub.events, m.roomSub.roomID, relayURL, m.keys)
+		relayURL, _ := splitGroupKey(sub.roomID)
+		return waitForGroupEvent(sub.events, sub.roomID, relayURL, keys)
 	}
 	return nil
 }
 
-// cancelRoomSub cancels the active room subscription if any.
-func (m *model) cancelRoomSub() {
-	if m.roomSub != nil {
-		m.roomSub.cancel()
-		m.roomSub = nil
+// cancelRoomSub cancels and removes a specific room subscription.
+func (m *model) cancelRoomSub(roomID string) {
+	if sub, ok := m.roomSubs[roomID]; ok {
+		sub.cancel()
+		delete(m.roomSubs, roomID)
+	}
+}
+
+// cancelAllRoomSubs cancels all room subscriptions.
+func (m *model) cancelAllRoomSubs() {
+	for id, sub := range m.roomSubs {
+		sub.cancel()
+		delete(m.roomSubs, id)
 	}
 }
 
@@ -195,23 +203,7 @@ func (m *model) activeSidebarItem() SidebarItem {
 	return nil
 }
 
-// subscribeIfNeeded returns a subscribe command if the active item changed.
-func (m *model) subscribeIfNeeded(prev int) tea.Cmd {
-	item := m.activeSidebarItem()
-	if item == nil {
-		return nil
-	}
-	if m.activeItem == prev {
-		return nil
-	}
-	switch it := item.(type) {
-	case ChannelItem:
-		return subscribeChannelCmd(m.pool, m.relays, it.Channel.ID)
-	case GroupItem:
-		return subscribeGroupCmd(m.pool, it.Group.RelayURL, it.Group.GroupID)
-	}
-	return nil
-}
+
 
 func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr nostr.Keyer, rooms []Room, savedGroups []SavedGroup, contacts []Contact, mdRender *glamour.TermRenderer, mdStyle string) model {
 	ta := textarea.New()
@@ -271,6 +263,7 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr no
 		height:      24,
 		activeItem:  0,
 		sidebar:     sidebar,
+		roomSubs:        make(map[string]*roomSub),
 		groupRecentIDs:  make(map[string][]string),
 		msgs:           make(map[string][]ChatMessage),
 		lastDMSeen:     LoadLastDMSeen(cfgFlagPath),
@@ -312,11 +305,12 @@ func (m *model) Init() tea.Cmd {
 		publishDMRelaysCmd(m.pool, m.relays, m.keys),
 		fetchNIP51ListsCmd(m.pool, m.relays, m.keys, m.kr),
 	}
-	if len(channels) > 0 && m.isChannelSelected() {
-		cmds = append(cmds, subscribeChannelCmd(m.pool, m.relays, channels[0].ID))
+	// Subscribe to ALL channels and groups at startup.
+	for _, ch := range channels {
+		cmds = append(cmds, subscribeChannelCmd(m.pool, m.relays, ch.ID))
 	}
-	if len(groups) > 0 && m.isGroupSelected() {
-		cmds = append(cmds, subscribeGroupCmd(m.pool, groups[0].RelayURL, groups[0].GroupID))
+	for _, g := range groups {
+		cmds = append(cmds, subscribeGroupCmd(m.pool, g.RelayURL, g.GroupID))
 	}
 	if m.cfg.Profile.Name != "" || m.cfg.Profile.DisplayName != "" || m.cfg.Profile.About != "" || m.cfg.Profile.Picture != "" {
 		cmds = append(cmds, publishProfileCmd(m.pool, m.relays, m.cfg.Profile, m.keys))
