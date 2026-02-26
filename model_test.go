@@ -80,13 +80,13 @@ func newTestModel(channels int, groups int, dmPeers int) *model {
 		activeItem: 0,
 	}
 	for i := 0; i < channels; i++ {
-		m.channels = append(m.channels, Channel{ID: "ch" + string(rune('0'+i)), Name: "chan" + string(rune('0'+i))})
+		m.sidebar = append(m.sidebar, ChannelItem{Channel: Channel{ID: "ch" + string(rune('0'+i)), Name: "chan" + string(rune('0'+i))}})
 	}
 	for i := 0; i < groups; i++ {
-		m.groups = append(m.groups, Group{RelayURL: "wss://r", GroupID: "g" + string(rune('0'+i)), Name: "grp" + string(rune('0'+i))})
+		m.sidebar = append(m.sidebar, GroupItem{Group: Group{RelayURL: "wss://r", GroupID: "g" + string(rune('0'+i)), Name: "grp" + string(rune('0'+i))}})
 	}
 	for i := 0; i < dmPeers; i++ {
-		m.dmPeers = append(m.dmPeers, "pk"+string(rune('0'+i)))
+		m.sidebar = append(m.sidebar, DMItem{PubKey: "pk" + string(rune('0'+i)), Name: "pk" + string(rune('0'+i))})
 	}
 	return m
 }
@@ -163,65 +163,67 @@ func TestIsDMSelected(t *testing.T) {
 	}
 }
 
-func TestActiveChannelIdx(t *testing.T) {
+func TestActiveChannelID(t *testing.T) {
 	m := newTestModel(2, 2, 2)
 
 	m.activeItem = 0
-	if idx := m.activeChannelIdx(); idx != 0 {
-		t.Errorf("expected 0, got %d", idx)
+	if id := m.activeChannelID(); id != "ch0" {
+		t.Errorf("expected ch0, got %q", id)
 	}
 
 	m.activeItem = 1
-	if idx := m.activeChannelIdx(); idx != 1 {
-		t.Errorf("expected 1, got %d", idx)
+	if id := m.activeChannelID(); id != "ch1" {
+		t.Errorf("expected ch1, got %q", id)
 	}
 
 	m.activeItem = 2 // group
-	if idx := m.activeChannelIdx(); idx != -1 {
-		t.Errorf("expected -1 for group, got %d", idx)
+	if id := m.activeChannelID(); id != "" {
+		t.Errorf("expected empty for group, got %q", id)
 	}
 
 	m.activeItem = 4 // DM
-	if idx := m.activeChannelIdx(); idx != -1 {
-		t.Errorf("expected -1 for DM, got %d", idx)
+	if id := m.activeChannelID(); id != "" {
+		t.Errorf("expected empty for DM, got %q", id)
 	}
 }
 
-func TestActiveGroupIdx(t *testing.T) {
+func TestActiveGroupKey(t *testing.T) {
 	m := newTestModel(2, 2, 2)
 
 	m.activeItem = 2
-	if idx := m.activeGroupIdx(); idx != 0 {
-		t.Errorf("expected 0, got %d", idx)
+	expected0 := groupKey("wss://r", "g0")
+	if gk := m.activeGroupKey(); gk != expected0 {
+		t.Errorf("expected %q, got %q", expected0, gk)
 	}
 
 	m.activeItem = 3
-	if idx := m.activeGroupIdx(); idx != 1 {
-		t.Errorf("expected 1, got %d", idx)
+	expected1 := groupKey("wss://r", "g1")
+	if gk := m.activeGroupKey(); gk != expected1 {
+		t.Errorf("expected %q, got %q", expected1, gk)
 	}
 
 	m.activeItem = 0 // channel
-	if idx := m.activeGroupIdx(); idx != -1 {
-		t.Errorf("expected -1 for channel, got %d", idx)
+	if gk := m.activeGroupKey(); gk != "" {
+		t.Errorf("expected empty for channel, got %q", gk)
 	}
 }
 
-func TestActiveDMPeerIdx(t *testing.T) {
+func TestActiveDMPeerPK(t *testing.T) {
 	m := newTestModel(2, 2, 2)
 
 	m.activeItem = 4
-	if idx := m.activeDMPeerIdx(); idx != 0 {
-		t.Errorf("expected 0, got %d", idx)
+	if pk := m.activeDMPeerPK(); pk != "pk0" {
+		t.Errorf("expected pk0, got %q", pk)
 	}
 
 	m.activeItem = 5
-	if idx := m.activeDMPeerIdx(); idx != 1 {
-		t.Errorf("expected 1, got %d", idx)
+	if pk := m.activeDMPeerPK(); pk != "pk1" {
+		t.Errorf("expected pk1, got %q", pk)
 	}
 
 	m.activeItem = 3 // group
-	if idx := m.activeDMPeerIdx(); idx != -1 {
-		t.Errorf("expected -1 for group, got %d", idx)
+	if pk := m.activeDMPeerPK(); pk != "" {
+		t.Errorf("expected empty for group, got %q", pk)
 	}
 }
 
@@ -305,8 +307,205 @@ func TestBoundaryConditions(t *testing.T) {
 		if !m.isDMSelected() {
 			t.Error("activeItem=0 with only DMs should be DM")
 		}
-		if idx := m.activeDMPeerIdx(); idx != 0 {
-			t.Errorf("expected DM index 0, got %d", idx)
+		if pk := m.activeDMPeerPK(); pk != "pk0" {
+			t.Errorf("expected DM peer pk0, got %q", pk)
+		}
+	})
+}
+
+func TestSidebarHelpers(t *testing.T) {
+	t.Run("channelCount/groupCount/dmCount", func(t *testing.T) {
+		m := newTestModel(2, 3, 4)
+		if got := m.channelCount(); got != 2 {
+			t.Errorf("channelCount() = %d, want 2", got)
+		}
+		if got := m.groupCount(); got != 3 {
+			t.Errorf("groupCount() = %d, want 3", got)
+		}
+		if got := m.dmCount(); got != 4 {
+			t.Errorf("dmCount() = %d, want 4", got)
+		}
+	})
+
+	t.Run("channelEndIdx/groupEndIdx", func(t *testing.T) {
+		m := newTestModel(2, 3, 4)
+		if got := m.channelEndIdx(); got != 2 {
+			t.Errorf("channelEndIdx() = %d, want 2", got)
+		}
+		if got := m.groupEndIdx(); got != 5 {
+			t.Errorf("groupEndIdx() = %d, want 5", got)
+		}
+	})
+
+	t.Run("appendChannelItem inserts in channel section", func(t *testing.T) {
+		m := newTestModel(1, 1, 1)
+		idx := m.appendChannelItem(Channel{ID: "new", Name: "new-chan"})
+		if idx != 1 {
+			t.Errorf("appendChannelItem returned %d, want 1", idx)
+		}
+		if m.channelCount() != 2 {
+			t.Errorf("channelCount() = %d, want 2", m.channelCount())
+		}
+		if m.sidebarTotal() != 4 {
+			t.Errorf("sidebarTotal() = %d, want 4", m.sidebarTotal())
+		}
+		// Verify order: channels, groups, DMs
+		if m.sidebar[0].Kind() != SidebarChannel || m.sidebar[1].Kind() != SidebarChannel {
+			t.Error("channels should be at positions 0-1")
+		}
+		if m.sidebar[2].Kind() != SidebarGroup {
+			t.Error("group should be at position 2")
+		}
+		if m.sidebar[3].Kind() != SidebarDM {
+			t.Error("DM should be at position 3")
+		}
+	})
+
+	t.Run("appendGroupItem inserts in group section", func(t *testing.T) {
+		m := newTestModel(1, 1, 1)
+		idx := m.appendGroupItem(Group{RelayURL: "wss://r", GroupID: "new", Name: "new-grp"})
+		if idx != 2 {
+			t.Errorf("appendGroupItem returned %d, want 2", idx)
+		}
+		if m.groupCount() != 2 {
+			t.Errorf("groupCount() = %d, want 2", m.groupCount())
+		}
+	})
+
+	t.Run("appendDMItem appends at end", func(t *testing.T) {
+		m := newTestModel(1, 1, 1)
+		idx := m.appendDMItem("newpk", "New Peer")
+		if idx != 3 {
+			t.Errorf("appendDMItem returned %d, want 3", idx)
+		}
+		if m.dmCount() != 2 {
+			t.Errorf("dmCount() = %d, want 2", m.dmCount())
+		}
+	})
+
+	t.Run("findChannelIdx", func(t *testing.T) {
+		m := newTestModel(2, 1, 1)
+		if idx := m.findChannelIdx("ch1"); idx != 1 {
+			t.Errorf("findChannelIdx(ch1) = %d, want 1", idx)
+		}
+		if idx := m.findChannelIdx("nonexistent"); idx != -1 {
+			t.Errorf("findChannelIdx(nonexistent) = %d, want -1", idx)
+		}
+	})
+
+	t.Run("findGroupIdx", func(t *testing.T) {
+		m := newTestModel(1, 2, 1)
+		if idx := m.findGroupIdx("wss://r", "g1"); idx != 2 {
+			t.Errorf("findGroupIdx(g1) = %d, want 2", idx)
+		}
+		if idx := m.findGroupIdx("wss://r", "nonexistent"); idx != -1 {
+			t.Errorf("findGroupIdx(nonexistent) = %d, want -1", idx)
+		}
+	})
+
+	t.Run("findDMPeerIdx", func(t *testing.T) {
+		m := newTestModel(1, 1, 2)
+		if idx := m.findDMPeerIdx("pk0"); idx != 2 {
+			t.Errorf("findDMPeerIdx(pk0) = %d, want 2", idx)
+		}
+		if idx := m.findDMPeerIdx("nonexistent"); idx != -1 {
+			t.Errorf("findDMPeerIdx(nonexistent) = %d, want -1", idx)
+		}
+	})
+
+	t.Run("containsDMPeer", func(t *testing.T) {
+		m := newTestModel(0, 0, 2)
+		if !m.containsDMPeer("pk0") {
+			t.Error("containsDMPeer(pk0) should be true")
+		}
+		if m.containsDMPeer("nonexistent") {
+			t.Error("containsDMPeer(nonexistent) should be false")
+		}
+	})
+
+	t.Run("removeSidebarItem", func(t *testing.T) {
+		m := newTestModel(2, 2, 2)
+		m.removeSidebarItem(0) // Remove first channel
+		if m.sidebarTotal() != 5 {
+			t.Errorf("sidebarTotal() = %d, want 5", m.sidebarTotal())
+		}
+		if m.channelCount() != 1 {
+			t.Errorf("channelCount() = %d, want 1", m.channelCount())
+		}
+	})
+
+	t.Run("allChannels", func(t *testing.T) {
+		m := newTestModel(2, 1, 1)
+		channels := m.allChannels()
+		if len(channels) != 2 {
+			t.Errorf("allChannels() returned %d, want 2", len(channels))
+		}
+	})
+
+	t.Run("allGroups", func(t *testing.T) {
+		m := newTestModel(1, 3, 1)
+		groups := m.allGroups()
+		if len(groups) != 3 {
+			t.Errorf("allGroups() returned %d, want 3", len(groups))
+		}
+	})
+
+	t.Run("allDMPeers", func(t *testing.T) {
+		m := newTestModel(1, 1, 2)
+		peers := m.allDMPeers()
+		if len(peers) != 2 {
+			t.Errorf("allDMPeers() returned %d, want 2", len(peers))
+		}
+	})
+
+	t.Run("updateDMItemName", func(t *testing.T) {
+		m := newTestModel(0, 0, 1)
+		m.updateDMItemName("pk0", "Alice")
+		di := m.sidebar[0].(DMItem)
+		if di.Name != "Alice" {
+			t.Errorf("expected Alice, got %q", di.Name)
+		}
+	})
+
+	t.Run("replaceChannels", func(t *testing.T) {
+		m := newTestModel(2, 1, 1)
+		m.replaceChannels([]Channel{{ID: "new1", Name: "New1"}, {ID: "new2", Name: "New2"}, {ID: "new3", Name: "New3"}})
+		if m.channelCount() != 3 {
+			t.Errorf("channelCount() = %d, want 3", m.channelCount())
+		}
+		if m.groupCount() != 1 {
+			t.Errorf("groupCount() = %d, want 1", m.groupCount())
+		}
+		if m.dmCount() != 1 {
+			t.Errorf("dmCount() = %d, want 1", m.dmCount())
+		}
+	})
+
+	t.Run("replaceGroups", func(t *testing.T) {
+		m := newTestModel(1, 2, 1)
+		m.replaceGroups([]Group{{RelayURL: "wss://r", GroupID: "new1", Name: "New1"}})
+		if m.groupCount() != 1 {
+			t.Errorf("groupCount() = %d, want 1", m.groupCount())
+		}
+		if m.channelCount() != 1 {
+			t.Errorf("channelCount() = %d, want 1", m.channelCount())
+		}
+		if m.dmCount() != 1 {
+			t.Errorf("dmCount() = %d, want 1", m.dmCount())
+		}
+	})
+
+	t.Run("replaceDMPeers", func(t *testing.T) {
+		m := newTestModel(1, 1, 2)
+		m.replaceDMPeers([]Contact{{PubKey: "newpk", Name: "NewPeer"}})
+		if m.dmCount() != 1 {
+			t.Errorf("dmCount() = %d, want 1", m.dmCount())
+		}
+		if m.channelCount() != 1 {
+			t.Errorf("channelCount() = %d, want 1", m.channelCount())
+		}
+		if m.groupCount() != 1 {
+			t.Errorf("groupCount() = %d, want 1", m.groupCount())
 		}
 	})
 }

@@ -18,7 +18,10 @@ func (m *model) sidebarItemAt(y int) (int, bool) {
 	row := 0
 	// CHANNELS header
 	row++ // "CHANNELS"
-	for i := range m.channels {
+	for i, it := range m.sidebar {
+		if it.Kind() != SidebarChannel {
+			break
+		}
 		if y == row {
 			return i, true
 		}
@@ -26,17 +29,23 @@ func (m *model) sidebarItemAt(y int) (int, bool) {
 	}
 	// GROUPS header
 	row++ // "GROUPS"
-	for i := range m.groups {
+	for i, it := range m.sidebar {
+		if it.Kind() != SidebarGroup {
+			continue
+		}
 		if y == row {
-			return len(m.channels) + i, true
+			return i, true
 		}
 		row++
 	}
 	// DMS header
 	row++ // "DMS"
-	for i := range m.dmPeers {
+	for i, it := range m.sidebar {
+		if it.Kind() != SidebarDM {
+			continue
+		}
 		if y == row {
-			return len(m.channels) + len(m.groups) + i, true
+			return i, true
 		}
 		row++
 	}
@@ -45,18 +54,8 @@ func (m *model) sidebarItemAt(y int) (int, bool) {
 
 func (m *model) sidebarWidth() int {
 	longest := 0
-	for _, ch := range m.channels {
-		if n := len(ch.Name); n > longest {
-			longest = n
-		}
-	}
-	for _, g := range m.groups {
-		if n := len(g.Name); n > longest {
-			longest = n
-		}
-	}
-	for _, peer := range m.dmPeers {
-		if n := len(m.resolveAuthor(peer)); n > longest {
+	for _, it := range m.sidebar {
+		if n := len(it.DisplayName()); n > longest {
 			longest = n
 		}
 	}
@@ -70,12 +69,8 @@ func (m *model) sidebarWidth() int {
 // renderTitleBar returns the rendered title bar for the current selection.
 func (m *model) renderTitleBar() string {
 	var title string
-	if m.isChannelSelected() && len(m.channels) > 0 {
-		title = "#" + m.channels[m.activeChannelIdx()].Name
-	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		title = "~" + m.groups[m.activeGroupIdx()].Name
-	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
-		title = "@" + m.resolveAuthor(m.dmPeers[m.activeDMPeerIdx()])
+	if item := m.activeSidebarItem(); item != nil {
+		title = item.Prefix() + item.DisplayName()
 	}
 	return lipgloss.NewStyle().Bold(true).Foreground(colorPrimary).Padding(0, 1).Render(title)
 }
@@ -111,15 +106,8 @@ func (m *model) updateLayout() {
 func (m *model) updateViewport() {
 	m.clearUnread()
 	var msgs []ChatMessage
-	if m.isChannelSelected() && len(m.channels) > 0 {
-		chID := m.activeChannelID()
-		msgs = m.msgs[chID]
-	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		gk := m.activeGroupKey()
-		msgs = m.msgs[gk]
-	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
-		peer := m.activeDMPeerPK()
-		msgs = m.msgs[peer]
+	if item := m.activeSidebarItem(); item != nil {
+		msgs = m.msgs[item.ItemID()]
 	} else {
 		msgs = m.globalMsgs
 	}
@@ -218,14 +206,17 @@ func (m *model) viewSidebar() string {
 
 	// CHANNELS section
 	items = append(items, sidebarSectionStyle.Render("CHANNELS"))
-	for i, ch := range m.channels {
-		name := "#" + ch.Name
+	for i, it := range m.sidebar {
+		if it.Kind() != SidebarChannel {
+			break
+		}
+		name := it.Prefix() + it.DisplayName()
 		if len(name) > sw-2 {
 			name = name[:sw-2]
 		}
 		if i == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))
-		} else if m.unread[ch.ID] {
+		} else if m.unread[it.ItemID()] {
 			items = append(items, sidebarUnreadStyle.Render(name))
 		} else {
 			items = append(items, sidebarItemStyle.Render(name))
@@ -234,16 +225,17 @@ func (m *model) viewSidebar() string {
 
 	// GROUPS section
 	items = append(items, sidebarSectionStyle.Render("GROUPS"))
-	for i, g := range m.groups {
-		name := "~" + g.Name
+	for i, it := range m.sidebar {
+		if it.Kind() != SidebarGroup {
+			continue
+		}
+		name := it.Prefix() + it.DisplayName()
 		if len(name) > sw-2 {
 			name = name[:sw-2]
 		}
-		idx := len(m.channels) + i
-		gk := groupKey(g.RelayURL, g.GroupID)
-		if idx == m.activeItem {
+		if i == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))
-		} else if m.unread[gk] {
+		} else if m.unread[it.ItemID()] {
 			items = append(items, sidebarUnreadStyle.Render(name))
 		} else {
 			items = append(items, sidebarItemStyle.Render(name))
@@ -252,15 +244,17 @@ func (m *model) viewSidebar() string {
 
 	// DMS section
 	items = append(items, sidebarSectionStyle.Render("DMS"))
-	for i, peer := range m.dmPeers {
-		name := "@" + m.resolveAuthor(peer)
+	for i, it := range m.sidebar {
+		if it.Kind() != SidebarDM {
+			continue
+		}
+		name := it.Prefix() + it.DisplayName()
 		if len(name) > sw-2 {
 			name = name[:sw-2]
 		}
-		idx := len(m.channels) + len(m.groups) + i
-		if idx == m.activeItem {
+		if i == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))
-		} else if m.unread[peer] {
+		} else if m.unread[it.ItemID()] {
 			items = append(items, sidebarUnreadStyle.Render(name))
 		} else {
 			items = append(items, sidebarItemStyle.Render(name))

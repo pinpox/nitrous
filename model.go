@@ -32,34 +32,29 @@ type model struct {
 	pool        *nostr.SimplePool
 	kr          nostr.Keyer
 	relays      []string
-	rooms       []Room // from rooms file
+	savedRooms  []Room // from rooms file
 
 	// TUI dimensions
 	width  int
 	height int
 
-	// Unified sidebar selection:
-	//   0..len(channels)-1                          = channels (#)
-	//   len(channels)..len(channels)+len(groups)-1  = groups (~)
-	//   len(channels)+len(groups)..                  = DMs (@)
+	// Unified sidebar — single source of truth for channels, groups, and DMs.
+	// Layout order: all channels first, then all groups, then all DMs.
 	activeItem int
-	sidebar    []SidebarItem // unified sidebar list (temporary duplication with channels/groups/dmPeers)
+	sidebar    []SidebarItem
 
-	// Channels
-	channels      []Channel
+	// Channel subscription state
 	channelSubID  string // ID of the channel we're subscribed to
 	channelEvents <-chan nostr.RelayEvent
 	channelCancel context.CancelFunc
 
-	// NIP-29 Groups
-	groups         []Group
+	// NIP-29 Group subscription state
 	groupRecentIDs map[string][]string // per-group ring buffer of event IDs (max 50)
 	groupSubKey    string              // groupKey of the group we're subscribed to
 	groupEvents    <-chan nostr.RelayEvent
 	groupCancel    context.CancelFunc
 
-	// DMs
-	dmPeers    []string // pubkeys of DM peers
+	// DM subscription state
 	dmEvents   <-chan nostr.Event
 	dmCancel   context.CancelFunc
 	lastDMSeen nostr.Timestamp
@@ -115,71 +110,55 @@ type model struct {
 
 // isChannelSelected returns true if the active sidebar item is a channel.
 func (m *model) isChannelSelected() bool {
-	return m.activeItem < len(m.channels)
+	item := m.activeSidebarItem()
+	return item != nil && item.Kind() == SidebarChannel
 }
 
 // isGroupSelected returns true if the active sidebar item is a NIP-29 group.
 func (m *model) isGroupSelected() bool {
-	return m.activeItem >= len(m.channels) && m.activeItem < len(m.channels)+len(m.groups)
+	item := m.activeSidebarItem()
+	return item != nil && item.Kind() == SidebarGroup
 }
 
 // isDMSelected returns true if the active sidebar item is a DM.
 func (m *model) isDMSelected() bool {
-	return m.activeItem >= len(m.channels)+len(m.groups)
-}
-
-// activeChannelIdx returns the channel index, or -1 if not a channel.
-func (m *model) activeChannelIdx() int {
-	if m.isChannelSelected() {
-		return m.activeItem
-	}
-	return -1
+	item := m.activeSidebarItem()
+	return item != nil && item.Kind() == SidebarDM
 }
 
 // activeChannelID returns the selected channel ID, or "" if not a channel.
 func (m *model) activeChannelID() string {
-	if idx := m.activeChannelIdx(); idx >= 0 && idx < len(m.channels) {
-		return m.channels[idx].ID
+	if item := m.activeSidebarItem(); item != nil {
+		if ci, ok := item.(ChannelItem); ok {
+			return ci.Channel.ID
+		}
 	}
 	return ""
-}
-
-// activeGroupIdx returns the group index, or -1 if not a group.
-func (m *model) activeGroupIdx() int {
-	if m.isGroupSelected() {
-		return m.activeItem - len(m.channels)
-	}
-	return -1
 }
 
 // activeGroupKey returns the groupKey of the selected group, or "".
 func (m *model) activeGroupKey() string {
-	if idx := m.activeGroupIdx(); idx >= 0 && idx < len(m.groups) {
-		g := m.groups[idx]
-		return groupKey(g.RelayURL, g.GroupID)
+	if item := m.activeSidebarItem(); item != nil {
+		if gi, ok := item.(GroupItem); ok {
+			return groupKey(gi.Group.RelayURL, gi.Group.GroupID)
+		}
 	}
 	return ""
 }
 
-// activeDMPeerIdx returns the DM peer index, or -1 if not a DM.
-func (m *model) activeDMPeerIdx() int {
-	if m.isDMSelected() {
-		return m.activeItem - len(m.channels) - len(m.groups)
-	}
-	return -1
-}
-
 // activeDMPeerPK returns the selected DM peer pubkey, or "" if not a DM.
 func (m *model) activeDMPeerPK() string {
-	if idx := m.activeDMPeerIdx(); idx >= 0 && idx < len(m.dmPeers) {
-		return m.dmPeers[idx]
+	if item := m.activeSidebarItem(); item != nil {
+		if di, ok := item.(DMItem); ok {
+			return di.PubKey
+		}
 	}
 	return ""
 }
 
 // sidebarTotal returns the total number of items in the unified sidebar.
 func (m *model) sidebarTotal() int {
-	return len(m.channels) + len(m.groups) + len(m.dmPeers)
+	return len(m.sidebar)
 }
 
 // activeSidebarItem returns the currently selected SidebarItem, or nil.
@@ -190,34 +169,20 @@ func (m *model) activeSidebarItem() SidebarItem {
 	return nil
 }
 
-// rebuildSidebar reconstructs the sidebar slice from the current channels, groups, and dmPeers.
-func (m *model) rebuildSidebar() {
-	m.sidebar = make([]SidebarItem, 0, len(m.channels)+len(m.groups)+len(m.dmPeers))
-	for _, ch := range m.channels {
-		m.sidebar = append(m.sidebar, ChannelItem{Channel: ch})
-	}
-	for _, g := range m.groups {
-		m.sidebar = append(m.sidebar, GroupItem{Group: g})
-	}
-	for _, peer := range m.dmPeers {
-		m.sidebar = append(m.sidebar, DMItem{PubKey: peer, Name: m.resolveAuthor(peer)})
-	}
-}
-
-// subscribeIfNeeded returns a subscribe command if the active item changed type.
+// subscribeIfNeeded returns a subscribe command if the active item changed.
 func (m *model) subscribeIfNeeded(prev int) tea.Cmd {
-	if m.isChannelSelected() {
-		prevWasChannel := prev < len(m.channels)
-		if !prevWasChannel || m.activeItem != prev {
-			return subscribeChannelCmd(m.pool, m.relays, m.activeChannelID())
-		}
+	item := m.activeSidebarItem()
+	if item == nil {
+		return nil
 	}
-	if m.isGroupSelected() {
-		prevWasGroup := prev >= len(m.channels) && prev < len(m.channels)+len(m.groups)
-		if !prevWasGroup || m.activeItem != prev {
-			g := m.groups[m.activeGroupIdx()]
-			return subscribeGroupCmd(m.pool, g.RelayURL, g.GroupID)
-		}
+	if m.activeItem == prev {
+		return nil
+	}
+	switch it := item.(type) {
+	case ChannelItem:
+		return subscribeChannelCmd(m.pool, m.relays, it.Channel.ID)
+	case GroupItem:
+		return subscribeGroupCmd(m.pool, it.Group.RelayURL, it.Group.GroupID)
 	}
 	return nil
 }
@@ -237,18 +202,6 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 
 	vp := viewport.New(80, 20)
 
-	// Populate channels from rooms file
-	var channels []Channel
-	for _, r := range rooms {
-		channels = append(channels, Channel{ID: r.ID, Name: r.Name})
-	}
-
-	// Populate groups from groups file
-	var groups []Group
-	for _, sg := range savedGroups {
-		groups = append(groups, Group{RelayURL: sg.RelayURL, GroupID: sg.GroupID, Name: sg.Name})
-	}
-
 	// Pre-cache own display name from config fallback chain.
 	ownName := shortPK(keys.PK)
 	if cfg.Profile.DisplayName != "" {
@@ -259,27 +212,25 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 
 	profiles := map[string]string{keys.PK: ownName}
 
-	// Seed DM peers and profiles from contacts file.
-	var dmPeers []string
+	// Seed profiles from contacts.
 	for _, c := range contacts {
-		dmPeers = append(dmPeers, c.PubKey)
 		profiles[c.PubKey] = c.Name
 	}
 
-	// Build initial sidebar.
-	sidebar := make([]SidebarItem, 0, len(channels)+len(groups)+len(dmPeers))
-	for _, ch := range channels {
-		sidebar = append(sidebar, ChannelItem{Channel: ch})
+	// Build initial sidebar: channels, then groups, then DMs.
+	var sidebar []SidebarItem
+	for _, r := range rooms {
+		sidebar = append(sidebar, ChannelItem{Channel: Channel{ID: r.ID, Name: r.Name}})
 	}
-	for _, g := range groups {
-		sidebar = append(sidebar, GroupItem{Group: g})
+	for _, sg := range savedGroups {
+		sidebar = append(sidebar, GroupItem{Group: Group{RelayURL: sg.RelayURL, GroupID: sg.GroupID, Name: sg.Name}})
 	}
-	for _, peer := range dmPeers {
-		name := profiles[peer]
+	for _, c := range contacts {
+		name := profiles[c.PubKey]
 		if name == "" {
-			name = shortPK(peer)
+			name = shortPK(c.PubKey)
 		}
-		sidebar = append(sidebar, DMItem{PubKey: peer, Name: name})
+		sidebar = append(sidebar, DMItem{PubKey: c.PubKey, Name: name})
 	}
 
 	return model{
@@ -289,15 +240,12 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		pool:        pool,
 		kr:          kr,
 		relays:      cfg.Relays,
-		rooms:       rooms,
+		savedRooms:  rooms,
 		width:       80,
 		height:      24,
 		activeItem:  0,
 		sidebar:     sidebar,
-		channels:       channels,
-		groups:          groups,
 		groupRecentIDs:  make(map[string][]string),
-		dmPeers:        dmPeers,
 		msgs:           make(map[string][]ChatMessage),
 		lastDMSeen:     LoadLastDMSeen(cfgFlagPath),
 		dmSeenAtStart:  LoadLastDMSeen(cfgFlagPath),
@@ -322,10 +270,12 @@ func (m *model) Init() tea.Cmd {
 	for _, r := range m.relays {
 		m.addSystemMsg(fmt.Sprintf("connecting to %s ...", r))
 	}
-	if len(m.channels) > 0 {
-		m.addSystemMsg(fmt.Sprintf("joining #%s ...", m.channels[0].Name))
-	} else if len(m.groups) > 0 {
-		m.addSystemMsg(fmt.Sprintf("joining ~%s ...", m.groups[0].Name))
+	channels := m.allChannels()
+	groups := m.allGroups()
+	if len(channels) > 0 {
+		m.addSystemMsg(fmt.Sprintf("joining #%s ...", channels[0].Name))
+	} else if len(groups) > 0 {
+		m.addSystemMsg(fmt.Sprintf("joining ~%s ...", groups[0].Name))
 	} else {
 		m.addSystemMsg("no rooms configured — use /channel create #name or /join <event-id>")
 	}
@@ -336,18 +286,17 @@ func (m *model) Init() tea.Cmd {
 		publishDMRelaysCmd(m.pool, m.relays, m.keys),
 		fetchNIP51ListsCmd(m.pool, m.relays, m.keys, m.kr),
 	}
-	if len(m.channels) > 0 && m.isChannelSelected() {
-		cmds = append(cmds, subscribeChannelCmd(m.pool, m.relays, m.channels[0].ID))
+	if len(channels) > 0 && m.isChannelSelected() {
+		cmds = append(cmds, subscribeChannelCmd(m.pool, m.relays, channels[0].ID))
 	}
-	if len(m.groups) > 0 && m.isGroupSelected() {
-		g := m.groups[0]
-		cmds = append(cmds, subscribeGroupCmd(m.pool, g.RelayURL, g.GroupID))
+	if len(groups) > 0 && m.isGroupSelected() {
+		cmds = append(cmds, subscribeGroupCmd(m.pool, groups[0].RelayURL, groups[0].GroupID))
 	}
 	if m.cfg.Profile.Name != "" || m.cfg.Profile.DisplayName != "" || m.cfg.Profile.About != "" || m.cfg.Profile.Picture != "" {
 		cmds = append(cmds, publishProfileCmd(m.pool, m.relays, m.cfg.Profile, m.keys))
 	}
 	// Fetch profiles for all known DM peers so display names are up to date.
-	for _, peer := range m.dmPeers {
+	for _, peer := range m.allDMPeers() {
 		cmds = append(cmds, fetchProfileCmd(m.pool, m.relays, peer))
 		m.profilePending[peer] = true
 	}
@@ -361,15 +310,9 @@ func (m *model) addSystemMsg(text string) {
 		Content:   text,
 		Timestamp: nostr.Now(),
 	}
-	if m.isChannelSelected() && len(m.channels) > 0 {
-		chID := m.activeChannelID()
-		m.msgs[chID] = appendMessage(m.msgs[chID], msg, m.cfg.MaxMessages)
-	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		gk := m.activeGroupKey()
-		m.msgs[gk] = appendMessage(m.msgs[gk], msg, m.cfg.MaxMessages)
-	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
-		peer := m.activeDMPeerPK()
-		m.msgs[peer] = appendMessage(m.msgs[peer], msg, m.cfg.MaxMessages)
+	if item := m.activeSidebarItem(); item != nil {
+		key := item.ItemID()
+		m.msgs[key] = appendMessage(m.msgs[key], msg, m.cfg.MaxMessages)
 	} else {
 		m.globalMsgs = appendMessage(m.globalMsgs, msg, m.cfg.MaxMessages)
 	}
@@ -418,12 +361,8 @@ func (m *model) syncInputHeight() {
 
 // clearUnread removes the unread indicator for the currently active item.
 func (m *model) clearUnread() {
-	if m.isChannelSelected() && len(m.channels) > 0 {
-		delete(m.unread, m.activeChannelID())
-	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		delete(m.unread, m.activeGroupKey())
-	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
-		delete(m.unread, m.activeDMPeerPK())
+	if item := m.activeSidebarItem(); item != nil {
+		delete(m.unread, item.ItemID())
 	}
 }
 

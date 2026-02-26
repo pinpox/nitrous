@@ -116,10 +116,12 @@ func (m *model) updateSuggestions() {
 			if len(tokens) == 2 {
 				partial = tokens[1]
 			}
-			for _, ch := range m.channels {
-				candidate := "#" + ch.Name
-				if partial == "" || (strings.HasPrefix(strings.ToLower(candidate), strings.ToLower(partial)) && !strings.EqualFold(candidate, partial)) {
-					suggestions = append(suggestions, candidate)
+			for _, it := range m.sidebar {
+				if ci, ok := it.(ChannelItem); ok {
+					candidate := "#" + ci.Channel.Name
+					if partial == "" || (strings.HasPrefix(strings.ToLower(candidate), strings.ToLower(partial)) && !strings.EqualFold(candidate, partial)) {
+						suggestions = append(suggestions, candidate)
+					}
 				}
 			}
 			// Scan current chat messages for invite links (host'groupid format).
@@ -137,10 +139,12 @@ func (m *model) updateSuggestions() {
 			if len(tokens) == 2 {
 				partial = strings.ToLower(tokens[1])
 			}
-			for _, peer := range m.dmPeers {
-				name := m.resolveAuthor(peer)
-				if partial == "" || (strings.HasPrefix(strings.ToLower(name), partial) && !strings.EqualFold(name, partial)) {
-					suggestions = append(suggestions, name)
+			for _, it := range m.sidebar {
+				if di, ok := it.(DMItem); ok {
+					name := di.Name
+					if partial == "" || (strings.HasPrefix(strings.ToLower(name), partial) && !strings.EqualFold(name, partial)) {
+						suggestions = append(suggestions, name)
+					}
 				}
 			}
 		}
@@ -291,12 +295,8 @@ func (m *model) mentionSuggestions(text string) []string {
 // current chat, ordered by most recent message first.
 func (m *model) currentChatAuthors() []string {
 	var msgs []ChatMessage
-	if m.isChannelSelected() && len(m.channels) > 0 {
-		msgs = m.msgs[m.activeChannelID()]
-	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		msgs = m.msgs[m.activeGroupKey()]
-	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
-		msgs = m.msgs[m.activeDMPeerPK()]
+	if item := m.activeSidebarItem(); item != nil {
+		msgs = m.msgs[item.ItemID()]
 	} else {
 		return nil
 	}
@@ -318,12 +318,8 @@ func (m *model) currentChatAuthors() []string {
 // links in host'groupid format and returns them (most recent first, deduped).
 func (m *model) extractInviteAddresses() []string {
 	var msgs []ChatMessage
-	if m.isDMSelected() && len(m.dmPeers) > 0 {
-		msgs = m.msgs[m.activeDMPeerPK()]
-	} else if m.isChannelSelected() && len(m.channels) > 0 {
-		msgs = m.msgs[m.activeChannelID()]
-	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		msgs = m.msgs[m.activeGroupKey()]
+	if item := m.activeSidebarItem(); item != nil {
+		msgs = m.msgs[item.ItemID()]
 	} else {
 		msgs = m.globalMsgs
 	}

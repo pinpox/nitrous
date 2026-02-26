@@ -45,35 +45,36 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/room":
-		if m.isChannelSelected() && len(m.channels) > 0 {
-			ch := m.channels[m.activeChannelIdx()]
-			nevent, err := nip19.EncodeEvent(ch.ID, m.relays, "")
-			if err != nil {
-				m.addSystemMsg(fmt.Sprintf("encode error: %v", err))
+		if item := m.activeSidebarItem(); item != nil {
+			switch it := item.(type) {
+			case ChannelItem:
+				nevent, err := nip19.EncodeEvent(it.Channel.ID, m.relays, "")
+				if err != nil {
+					m.addSystemMsg(fmt.Sprintf("encode error: %v", err))
+					return m, nil
+				}
+				m.qrOverlay = renderQR("#"+it.Channel.Name, "nostr:"+nevent)
+				return m, nil
+			case GroupItem:
+				naddr, err := m.groupNaddr(it.Group)
+				if err != nil {
+					m.addSystemMsg(fmt.Sprintf("encode error: %v", err))
+					return m, nil
+				}
+				m.qrOverlay = renderQR("~"+it.Group.Name, "nostr:"+naddr)
 				return m, nil
 			}
-			m.qrOverlay = renderQR("#"+ch.Name, "nostr:"+nevent)
-			return m, nil
-		}
-		if m.isGroupSelected() && len(m.groups) > 0 {
-			g := m.groups[m.activeGroupIdx()]
-			naddr, err := m.groupNaddr(g)
-			if err != nil {
-				m.addSystemMsg(fmt.Sprintf("encode error: %v", err))
-				return m, nil
-			}
-			m.qrOverlay = renderQR("~"+g.Name, "nostr:"+naddr)
-			return m, nil
 		}
 		m.addSystemMsg("no active channel or group — switch to one first")
 		return m, nil
 
 	case "/delete":
-		if !m.isGroupSelected() || len(m.groups) == 0 {
+		if !m.isGroupSelected() {
 			m.addSystemMsg("/delete only works in a NIP-29 group")
 			return m, nil
 		}
-		g := m.groups[m.activeGroupIdx()]
+		gi := m.activeSidebarItem().(GroupItem)
+		g := gi.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
 		if arg != "" {
 			// Delete by explicit event ID (admin use).
@@ -111,7 +112,7 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		return m.handleGroupCommand(arg)
 
 	case "/invite":
-		if !m.isGroupSelected() || len(m.groups) == 0 {
+		if !m.isGroupSelected() {
 			m.addSystemMsg("/invite requires a group to be selected")
 			return m, nil
 		}
@@ -215,11 +216,12 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 
 	case "set":
 		// /group set open | /group set closed
-		if !m.isGroupSelected() || len(m.groups) == 0 {
+		if !m.isGroupSelected() {
 			m.addSystemMsg("/group set requires a group to be selected")
 			return m, nil
 		}
-		g := m.groups[m.activeGroupIdx()]
+		gi := m.activeSidebarItem().(GroupItem)
+		g := gi.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
 		switch strings.ToLower(subArg) {
 		case "open":
@@ -233,7 +235,7 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 
 	case "user":
 		// /group user add <pubkey>
-		if !m.isGroupSelected() || len(m.groups) == 0 {
+		if !m.isGroupSelected() {
 			m.addSystemMsg("/group user requires a group to be selected")
 			return m, nil
 		}
@@ -251,14 +253,15 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 			}
 			pk = decoded.(string)
 		}
-		g := m.groups[m.activeGroupIdx()]
+		gi := m.activeSidebarItem().(GroupItem)
+		g := gi.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
 		m.addSystemMsg(fmt.Sprintf("adding user %s to ~%s", shortPK(pk), g.Name))
 		return m, putUserCmd(m.pool, g.RelayURL, g.GroupID, pk, m.groupRecentIDs[gk], m.keys)
 
 	case "name":
 		// /group name <new-name>
-		if !m.isGroupSelected() || len(m.groups) == 0 {
+		if !m.isGroupSelected() {
 			m.addSystemMsg("/group name requires a group to be selected")
 			return m, nil
 		}
@@ -266,22 +269,22 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 			m.addSystemMsg("usage: /group name <new-name>")
 			return m, nil
 		}
-		idx := m.activeGroupIdx()
-		g := m.groups[idx]
+		gi := m.activeSidebarItem().(GroupItem)
+		g := gi.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
-		m.groups[idx].Name = subArg
+		m.updateGroupName(g.RelayURL, g.GroupID, subArg)
 		if err := UpdateSavedGroupName(m.cfgFlagPath, g.RelayURL, g.GroupID, subArg); err != nil {
 			log.Printf("/group name: failed to save: %v", err)
 		}
 		m.updateViewport()
 		return m, tea.Batch(
 			editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"name": subArg}, m.groupRecentIDs[gk], m.keys),
-			publishSimpleGroupsListCmd(m.pool, m.relays, m.groups, m.keys),
+			publishSimpleGroupsListCmd(m.pool, m.relays, m.allGroups(), m.keys),
 		)
 
 	case "about":
 		// /group about <text>
-		if !m.isGroupSelected() || len(m.groups) == 0 {
+		if !m.isGroupSelected() {
 			m.addSystemMsg("/group about requires a group to be selected")
 			return m, nil
 		}
@@ -289,13 +292,14 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 			m.addSystemMsg("usage: /group about <description>")
 			return m, nil
 		}
-		g := m.groups[m.activeGroupIdx()]
+		gi := m.activeSidebarItem().(GroupItem)
+		g := gi.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
 		return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"about": subArg}, m.groupRecentIDs[gk], m.keys)
 
 	case "picture":
 		// /group picture <url>
-		if !m.isGroupSelected() || len(m.groups) == 0 {
+		if !m.isGroupSelected() {
 			m.addSystemMsg("/group picture requires a group to be selected")
 			return m, nil
 		}
@@ -303,7 +307,8 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 			m.addSystemMsg("usage: /group picture <url>")
 			return m, nil
 		}
-		g := m.groups[m.activeGroupIdx()]
+		gi := m.activeSidebarItem().(GroupItem)
+		g := gi.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
 		return m, editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"picture": subArg}, m.groupRecentIDs[gk], m.keys)
 
@@ -317,7 +322,8 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 // inviteToGroup resolves a contact name, npub, or hex pubkey, adds them to
 // the current group via kind 9000, and sends a DM with the group naddr.
 func (m *model) inviteToGroup(input string) (tea.Model, tea.Cmd) {
-	g := m.groups[m.activeGroupIdx()]
+	gi := m.activeSidebarItem().(GroupItem)
+	g := gi.Group
 	gk := groupKey(g.RelayURL, g.GroupID)
 
 	// Resolve input to a pubkey: try contact name first, then npub, then raw hex.
@@ -360,12 +366,12 @@ func (m *model) joinChannel(arg string) (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(arg, "#") {
 		// Lookup by name
 		name := strings.TrimPrefix(arg, "#")
-		for i, ch := range m.channels {
-			if strings.EqualFold(ch.Name, name) {
-				log.Printf("joinChannel: found %q -> %s", name, ch.ID)
+		for i, it := range m.sidebar {
+			if ci, ok := it.(ChannelItem); ok && strings.EqualFold(ci.Channel.Name, name) {
+				log.Printf("joinChannel: found %q -> %s", name, ci.Channel.ID)
 				m.activeItem = i
 				m.updateViewport()
-				return m, subscribeChannelCmd(m.pool, m.relays, ch.ID)
+				return m, subscribeChannelCmd(m.pool, m.relays, ci.Channel.ID)
 			}
 		}
 		m.addSystemMsg("unknown room: " + name + " (add it to your rooms file)")
@@ -374,13 +380,12 @@ func (m *model) joinChannel(arg string) (tea.Model, tea.Cmd) {
 
 	// Raw hex event ID — check if already known
 	id := arg
-	for i, ch := range m.channels {
-		if ch.ID == id {
-			log.Printf("joinChannel: already have %s as %q", id, ch.Name)
-			m.activeItem = i
-			m.updateViewport()
-			return m, subscribeChannelCmd(m.pool, m.relays, ch.ID)
-		}
+	if idx := m.findChannelIdx(id); idx >= 0 {
+		ci := m.sidebar[idx].(ChannelItem)
+		log.Printf("joinChannel: already have %s as %q", id, ci.Channel.Name)
+		m.activeItem = idx
+		m.updateViewport()
+		return m, subscribeChannelCmd(m.pool, m.relays, ci.Channel.ID)
 	}
 
 	// New room — add with placeholder, fetch metadata to get the real name
@@ -388,8 +393,8 @@ func (m *model) joinChannel(arg string) (tea.Model, tea.Cmd) {
 	if len(placeholder) > 8 {
 		placeholder = placeholder[:8]
 	}
-	m.channels = append(m.channels, Channel{Name: placeholder, ID: id})
-	m.activeItem = len(m.channels) - 1
+	idx := m.appendChannelItem(Channel{Name: placeholder, ID: id})
+	m.activeItem = idx
 	m.updateViewport()
 	return m, tea.Batch(
 		subscribeChannelCmd(m.pool, m.relays, id),
@@ -417,12 +422,11 @@ func (m *model) joinGroup(arg string) (tea.Model, tea.Cmd) {
 	gk := groupKey(relayURL, groupID)
 
 	// Check if already known
-	for i, g := range m.groups {
-		if g.RelayURL == relayURL && g.GroupID == groupID {
-			m.activeItem = len(m.channels) + i
-			m.updateViewport()
-			return m, subscribeGroupCmd(m.pool, g.RelayURL, g.GroupID)
-		}
+	if idx := m.findGroupIdx(relayURL, groupID); idx >= 0 {
+		m.activeItem = idx
+		m.updateViewport()
+		gi := m.sidebar[idx].(GroupItem)
+		return m, subscribeGroupCmd(m.pool, gi.Group.RelayURL, gi.Group.GroupID)
 	}
 
 	// New group — send join request, then handle groupJoinedMsg
@@ -451,23 +455,20 @@ func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
 	}
 
 	newPeer := false
-	if !containsStr(m.dmPeers, pk) {
+	if !m.containsDMPeer(pk) {
 		newPeer = true
-		m.dmPeers = append(m.dmPeers, pk)
+		m.appendDMItem(pk, m.resolveAuthor(pk))
 		if err := AppendContact(m.cfgFlagPath, Contact{Name: m.resolveAuthor(pk), PubKey: pk}); err != nil {
 			log.Printf("openDM: failed to save contact: %v", err)
 		}
 	}
 
-	for i, p := range m.dmPeers {
-		if p == pk {
-			m.activeItem = len(m.channels) + len(m.groups) + i
-			break
-		}
+	if idx := m.findDMPeerIdx(pk); idx >= 0 {
+		m.activeItem = idx
 	}
 	m.updateViewport()
 	if newPeer {
-		return m, publishContactsListCmd(m.pool, m.relays, contactsFromModel(m.dmPeers, m.profiles), m.keys, m.kr)
+		return m, publishContactsListCmd(m.pool, m.relays, contactsFromModel(m.allDMPeers(), m.profiles), m.keys, m.kr)
 	}
 	return m, nil
 }
@@ -481,11 +482,17 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	item := m.activeSidebarItem()
+	if item == nil {
+		m.addSystemMsg("nothing to leave")
+		return m, nil
+	}
+
 	var leaveCmds []tea.Cmd
 
-	if m.isChannelSelected() && len(m.channels) > 0 {
-		idx := m.activeChannelIdx()
-		ch := m.channels[idx]
+	switch it := item.(type) {
+	case ChannelItem:
+		ch := it.Channel
 
 		// Cancel subscription if this is the active one.
 		if ch.ID == m.channelSubID && m.channelCancel != nil {
@@ -495,8 +502,8 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 			m.channelSubID = ""
 		}
 
-		// Remove from channels list and message history.
-		m.channels = append(m.channels[:idx], m.channels[idx+1:]...)
+		// Remove from sidebar and message history.
+		m.removeSidebarItem(m.activeItem)
 		delete(m.msgs, ch.ID)
 
 		// Remove from rooms file.
@@ -504,11 +511,11 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 			log.Printf("leaveCurrentItem: failed to remove room: %v", err)
 		}
 
-		leaveCmds = append(leaveCmds, publishPublicChatsListCmd(m.pool, m.relays, m.channels, m.keys))
+		leaveCmds = append(leaveCmds, publishPublicChatsListCmd(m.pool, m.relays, m.allChannels(), m.keys))
 		log.Printf("leaveCurrentItem: left channel #%s", ch.Name)
-	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		idx := m.activeGroupIdx()
-		g := m.groups[idx]
+
+	case GroupItem:
+		g := it.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
 
 		// Cancel subscription if this is the active one.
@@ -519,8 +526,8 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 			m.groupSubKey = ""
 		}
 
-		// Remove from groups list and message history.
-		m.groups = append(m.groups[:idx], m.groups[idx+1:]...)
+		// Remove from sidebar and message history.
+		m.removeSidebarItem(m.activeItem)
 		delete(m.msgs, gk)
 
 		// Remove from groups file.
@@ -534,14 +541,14 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 		// Clean up recent IDs tracking.
 		delete(m.groupRecentIDs, gk)
 
-		leaveCmds = append(leaveCmds, publishSimpleGroupsListCmd(m.pool, m.relays, m.groups, m.keys))
+		leaveCmds = append(leaveCmds, publishSimpleGroupsListCmd(m.pool, m.relays, m.allGroups(), m.keys))
 		log.Printf("leaveCurrentItem: left group ~%s", g.Name)
-	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
-		idx := m.activeDMPeerIdx()
-		peer := m.dmPeers[idx]
 
-		// Remove from peers list and message history.
-		m.dmPeers = append(m.dmPeers[:idx], m.dmPeers[idx+1:]...)
+	case DMItem:
+		peer := it.PubKey
+
+		// Remove from sidebar and message history.
+		m.removeSidebarItem(m.activeItem)
 		delete(m.msgs, peer)
 
 		// Remove from contacts file.
@@ -549,7 +556,7 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 			log.Printf("leaveCurrentItem: failed to remove contact: %v", err)
 		}
 
-		leaveCmds = append(leaveCmds, publishContactsListCmd(m.pool, m.relays, contactsFromModel(m.dmPeers, m.profiles), m.keys, m.kr))
+		leaveCmds = append(leaveCmds, publishContactsListCmd(m.pool, m.relays, contactsFromModel(m.allDMPeers(), m.profiles), m.keys, m.kr))
 		log.Printf("leaveCurrentItem: left DM with %s", m.resolveAuthor(peer))
 	}
 
@@ -564,11 +571,13 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 	m.updateViewport()
 
 	// Subscribe to the new active item if needed.
-	if m.isChannelSelected() && len(m.channels) > 0 {
-		leaveCmds = append(leaveCmds, subscribeChannelCmd(m.pool, m.relays, m.activeChannelID()))
-	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		g := m.groups[m.activeGroupIdx()]
-		leaveCmds = append(leaveCmds, subscribeGroupCmd(m.pool, g.RelayURL, g.GroupID))
+	if newItem := m.activeSidebarItem(); newItem != nil {
+		switch it := newItem.(type) {
+		case ChannelItem:
+			leaveCmds = append(leaveCmds, subscribeChannelCmd(m.pool, m.relays, it.Channel.ID))
+		case GroupItem:
+			leaveCmds = append(leaveCmds, subscribeGroupCmd(m.pool, it.Group.RelayURL, it.Group.GroupID))
+		}
 	}
 
 	if len(leaveCmds) > 0 {
