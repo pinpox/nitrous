@@ -12,9 +12,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/keyer"
-	"github.com/nbd-wtf/go-nostr/nip19"
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/keyer"
+	"fiatjaf.com/nostr/nip19"
 )
 
 //go:embed config.example.toml
@@ -33,8 +33,13 @@ func main() {
 		}
 		defer f.Close()
 		log.Println("debug logging enabled")
+		// Route the library's internal loggers to our debug log too.
+		nostr.InfoLogger.SetOutput(f)
+		nostr.DebugLogger.SetOutput(f)
 	} else {
 		log.SetOutput(io.Discard)
+		nostr.InfoLogger.SetOutput(io.Discard)
+		nostr.DebugLogger.SetOutput(io.Discard)
 	}
 
 	cfgPath := configPath(*configFlag)
@@ -88,18 +93,16 @@ func main() {
 	mdStyle := detectGlamourStyle()
 	mdRender := newMarkdownRenderer(mdStyle)
 
-	kr, err := keyer.NewPlainKeySigner(keys.SK)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "keyer error: %v\n", err)
-		os.Exit(1)
-	}
+	kr := keyer.NewPlainKeySigner(keys.SK)
 
-	pool := nostr.NewSimplePool(context.Background(), nostr.WithAuthHandler(func(ctx context.Context, ie nostr.RelayEvent) error {
-		log.Printf("NIP-42 auth requested by %s", ie.Relay.URL)
-		return kr.SignEvent(ctx, ie.Event)
-	}))
+	pool := nostr.NewPool(nostr.PoolOptions{
+		AuthRequiredHandler: func(ctx context.Context, evt *nostr.Event) error {
+			log.Printf("NIP-42 auth requested")
+			return kr.SignEvent(ctx, evt)
+		},
+	})
 
-	m := newModel(cfg, *configFlag, keys, pool, kr, rooms, groups, contacts, mdRender, mdStyle)
+	m := newModel(cfg, *configFlag, keys, pool, &kr, rooms, groups, contacts, mdRender, mdStyle)
 
 	log.Println("starting TUI")
 	p := tea.NewProgram(&m, tea.WithAltScreen(), tea.WithMouseCellMotion())
@@ -119,22 +122,10 @@ func initFirstRun(cfgPath string) {
 	}
 
 	// Generate keypair.
-	sk := nostr.GeneratePrivateKey()
-	pk, err := nostr.GetPublicKey(sk)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error deriving public key: %v\n", err)
-		os.Exit(1)
-	}
-	nsec, err := nip19.EncodePrivateKey(sk)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error encoding nsec: %v\n", err)
-		os.Exit(1)
-	}
-	npub, err := nip19.EncodePublicKey(pk)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error encoding npub: %v\n", err)
-		os.Exit(1)
-	}
+	sk := nostr.Generate()
+	pk := nostr.GetPublicKey(sk)
+	nsec := nip19.EncodeNsec(sk)
+	npub := nip19.EncodeNpub(pk)
 
 	// Write key file.
 	keyPath := filepath.Join(dir, "nsec")
@@ -171,22 +162,10 @@ func runKeygen(cfg Config) {
 		os.Exit(1)
 	}
 
-	sk := nostr.GeneratePrivateKey()
-	pk, err := nostr.GetPublicKey(sk)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error deriving public key: %v\n", err)
-		os.Exit(1)
-	}
-	nsec, err := nip19.EncodePrivateKey(sk)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error encoding nsec: %v\n", err)
-		os.Exit(1)
-	}
-	npub, err := nip19.EncodePublicKey(pk)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error encoding npub: %v\n", err)
-		os.Exit(1)
-	}
+	sk := nostr.Generate()
+	pk := nostr.GetPublicKey(sk)
+	nsec := nip19.EncodeNsec(sk)
+	npub := nip19.EncodeNpub(pk)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		fmt.Fprintf(os.Stderr, "error creating directory: %v\n", err)

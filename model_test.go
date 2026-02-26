@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 )
 
 func TestAppendMessage(t *testing.T) {

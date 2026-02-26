@@ -3,7 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/nbd-wtf/go-nostr/nip19"
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip19"
 )
 
 func TestShortPK(t *testing.T) {
@@ -104,15 +105,11 @@ func TestParseGroupInput(t *testing.T) {
 	}
 
 	// Test valid naddr encoding: build one and parse it back.
-	naddr, err := nip19.EncodeEntity(
-		"abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-		39000,
-		"testgroup",
-		[]string{"wss://relay.test.com"},
-	)
+	pk, err := nostr.PubKeyFromHex("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890")
 	if err != nil {
-		t.Fatalf("failed to encode naddr for test: %v", err)
+		t.Fatalf("failed to parse pubkey: %v", err)
 	}
+	naddr := nip19.EncodeNaddr(pk, nostr.Kind(39000), "testgroup", []string{"wss://relay.test.com"})
 	tests = append(tests, struct {
 		name      string
 		input     string

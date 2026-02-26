@@ -5,23 +5,17 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/keyer"
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/keyer"
 )
 
-// testKeys generates a fresh key pair and keyer for tests.
+// testKeysWithKeyer generates a fresh key pair and keyer for tests.
 func testKeysWithKeyer(t *testing.T) (Keys, nostr.Keyer) {
 	t.Helper()
-	sk := nostr.GeneratePrivateKey()
-	pk, err := nostr.GetPublicKey(sk)
-	if err != nil {
-		t.Fatalf("GetPublicKey: %v", err)
-	}
-	kr, err := keyer.NewPlainKeySigner(sk)
-	if err != nil {
-		t.Fatalf("NewPlainKeySigner: %v", err)
-	}
-	return Keys{SK: sk, PK: pk, NPub: "npub1test"}, kr
+	sk := nostr.Generate()
+	pk := nostr.GetPublicKey(sk)
+	kr := keyer.NewPlainKeySigner(sk)
+	return Keys{SK: sk, PK: pk, NPub: "npub1test"}, &kr
 }
 
 func TestSelfEncryptDecryptRoundtrip(t *testing.T) {
@@ -82,7 +76,7 @@ func TestBuildParseContactsListRoundtrip(t *testing.T) {
 	if evt.Kind != nostr.KindCategorizedPeopleList {
 		t.Errorf("kind = %d, want %d", evt.Kind, nostr.KindCategorizedPeopleList)
 	}
-	if dTag := evt.Tags.GetFirst([]string{"d", "Chat-Friends"}); dTag == nil {
+	if dTag := evt.Tags.FindWithValue("d", "Chat-Friends"); dTag == nil {
 		t.Error("missing d-tag 'Chat-Friends'")
 	}
 	if evt.Content == "" {

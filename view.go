@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 )
 
 // sidebarItemAt maps a Y coordinate to a sidebar item index.
@@ -129,7 +129,7 @@ func (m *model) updateViewport() {
 		displayName := msg.Author
 		if msg.PubKey != "" {
 			if msg.IsMine {
-				displayName = m.resolveAuthor(m.keys.PK)
+				displayName = m.resolveAuthor(m.keys.PK.Hex())
 			} else {
 				displayName = m.resolveAuthor(msg.PubKey)
 			}

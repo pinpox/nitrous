@@ -13,7 +13,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	qrterminal "github.com/mdp/qrterminal/v3"
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 )
 
 // Group represents a NIP-29 relay-based group.
@@ -29,7 +29,7 @@ type model struct {
 	cfg         Config
 	cfgFlagPath string
 	keys        Keys
-	pool        *nostr.SimplePool
+	pool        *nostr.Pool
 	kr          nostr.Keyer
 	relays      []string
 	savedRooms  []Room // from rooms file
@@ -213,7 +213,7 @@ func (m *model) subscribeIfNeeded(prev int) tea.Cmd {
 	return nil
 }
 
-func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool, kr nostr.Keyer, rooms []Room, savedGroups []SavedGroup, contacts []Contact, mdRender *glamour.TermRenderer, mdStyle string) model {
+func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr nostr.Keyer, rooms []Room, savedGroups []SavedGroup, contacts []Contact, mdRender *glamour.TermRenderer, mdStyle string) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message... (/help for commands)"
 	ta.Prompt = "> "
@@ -229,14 +229,14 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 	vp := viewport.New(80, 20)
 
 	// Pre-cache own display name from config fallback chain.
-	ownName := shortPK(keys.PK)
+	ownName := shortPK(keys.PK.Hex())
 	if cfg.Profile.DisplayName != "" {
 		ownName = cfg.Profile.DisplayName
 	} else if cfg.Profile.Name != "" {
 		ownName = cfg.Profile.Name
 	}
 
-	profiles := map[string]string{keys.PK: ownName}
+	profiles := map[string]string{keys.PK.Hex(): ownName}
 
 	// Seed profiles from contacts.
 	for _, c := range contacts {
@@ -406,15 +406,6 @@ func appendMessage(msgs []ChatMessage, msg ChatMessage, maxMessages int) []ChatM
 		msgs = msgs[len(msgs)-maxMessages:]
 	}
 	return msgs
-}
-
-func containsStr(sl []string, s string) bool {
-	for _, v := range sl {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 // renderQR renders a QR code with a title line above it.

@@ -8,12 +8,13 @@ import (
 	"log"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip19"
-	"github.com/nbd-wtf/go-nostr/nip29"
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip19"
+	"fiatjaf.com/nostr/nip29"
 )
 
 // --- NIP-29 Relay-Based Groups ---
@@ -70,25 +71,48 @@ type groupInviteCreatedMsg struct {
 
 // subscribeGroupCmd opens a subscription on a single relay for a NIP-29 group.
 // Subscribes to both kind 9 (chat messages) and kind 39000 (metadata) using
-// separate filters since they use different tag keys ("h" vs "d").
-func subscribeGroupCmd(pool *nostr.SimplePool, relayURL, groupID string) tea.Cmd {
+// two separate subscriptions merged into one channel (the new library takes
+// a single filter per SubscribeMany call).
+func subscribeGroupCmd(pool *nostr.Pool, relayURL, groupID string) tea.Cmd {
 	return func() tea.Msg {
 		gk := groupKey(relayURL, groupID)
 		log.Printf("subscribeGroupCmd: relay=%s group=%s", relayURL, groupID)
 		ctx, cancel := context.WithCancel(context.Background())
-		ch := pool.SubMany(ctx, []string{relayURL}, nostr.Filters{
-			{
-				Kinds: []int{nostr.KindSimpleGroupChatMessage},
+		merged := make(chan nostr.RelayEvent)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// Chat messages (kind 9)
+		go func() {
+			defer wg.Done()
+			for re := range pool.SubscribeMany(ctx, []string{relayURL}, nostr.Filter{
+				Kinds: []nostr.Kind{nostr.KindSimpleGroupChatMessage},
 				Tags:  nostr.TagMap{"h": {groupID}},
 				Limit: 50,
-			},
-			{
-				Kinds: []int{nostr.KindSimpleGroupMetadata},
+			}, nostr.SubscriptionOptions{}) {
+				merged <- re
+			}
+		}()
+
+		// Metadata (kind 39000)
+		go func() {
+			defer wg.Done()
+			for re := range pool.SubscribeMany(ctx, []string{relayURL}, nostr.Filter{
+				Kinds: []nostr.Kind{nostr.KindSimpleGroupMetadata},
 				Tags:  nostr.TagMap{"d": {groupID}},
 				Limit: 1,
-			},
-		})
-		return groupSubStartedMsg{groupKey: gk, events: ch, cancel: cancel}
+			}, nostr.SubscriptionOptions{}) {
+				merged <- re
+			}
+		}()
+
+		go func() {
+			wg.Wait()
+			close(merged)
+		}()
+
+		return groupSubStartedMsg{groupKey: gk, events: merged, cancel: cancel}
 	}
 }
 
@@ -117,7 +141,7 @@ func waitForGroupEvent(events <-chan nostr.RelayEvent, gk string, relayURL strin
 			}
 			if name != "" && groupID != "" {
 				log.Printf("waitForGroupEvent: got metadata for group %s: name=%q", groupID, name)
-				return groupMetaMsg{RelayURL: relayURL, GroupID: groupID, Name: name, RelayPubKey: re.PubKey, FromSub: true}
+				return groupMetaMsg{RelayURL: relayURL, GroupID: groupID, Name: name, RelayPubKey: re.PubKey.Hex(), FromSub: true}
 			}
 			log.Printf("waitForGroupEvent: got metadata event but no usable name, skipping")
 			// Re-wait for next event rather than surfacing an empty metadata msg.
@@ -125,11 +149,11 @@ func waitForGroupEvent(events <-chan nostr.RelayEvent, gk string, relayURL strin
 		}
 
 		return groupEventMsg(ChatMessage{
-			Author:    shortPK(re.PubKey),
-			PubKey:    re.PubKey,
+			Author:    shortPK(re.PubKey.Hex()),
+			PubKey:    re.PubKey.Hex(),
 			Content:   re.Content,
 			Timestamp: re.CreatedAt,
-			EventID:   re.ID,
+			EventID:   re.ID.Hex(),
 			GroupKey:  gk,
 			IsMine:    re.PubKey == keys.PK,
 		})
@@ -153,7 +177,7 @@ func buildGroupMessageEvent(groupID, content string, previousIDs []string, keys 
 }
 
 // publishGroupMessage signs and publishes a kind-9 message to a NIP-29 group.
-func publishGroupMessage(pool *nostr.SimplePool, relayURL, groupID, content string, previousIDs []string, keys Keys) tea.Cmd {
+func publishGroupMessage(pool *nostr.Pool, relayURL, groupID, content string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		gk := groupKey(relayURL, groupID)
 		evt, err := buildGroupMessageEvent(groupID, content, previousIDs, keys)
@@ -172,11 +196,11 @@ func publishGroupMessage(pool *nostr.SimplePool, relayURL, groupID, content stri
 		}
 
 		return groupEventMsg(ChatMessage{
-			Author:    shortPK(keys.PK),
-			PubKey:    keys.PK,
+			Author:    shortPK(keys.PK.Hex()),
+			PubKey:    keys.PK.Hex(),
 			Content:   content,
 			Timestamp: evt.CreatedAt,
-			EventID:   evt.GetID(),
+			EventID:   evt.GetID().Hex(),
 			GroupKey:  gk,
 			IsMine:    true,
 		})
@@ -202,7 +226,7 @@ func buildJoinGroupEvent(groupID string, previousIDs []string, inviteCode string
 }
 
 // joinGroupCmd publishes a kind-9021 join request for a NIP-29 group.
-func joinGroupCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs []string, inviteCode string, keys Keys) tea.Cmd {
+func joinGroupCmd(pool *nostr.Pool, relayURL, groupID string, previousIDs []string, inviteCode string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildJoinGroupEvent(groupID, previousIDs, inviteCode, keys)
 		if err != nil {
@@ -245,7 +269,7 @@ func buildLeaveGroupEvent(groupID string, previousIDs []string, keys Keys) (nost
 }
 
 // leaveGroupCmd publishes a kind-9022 leave request for a NIP-29 group.
-func leaveGroupCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs []string, keys Keys) tea.Cmd {
+func leaveGroupCmd(pool *nostr.Pool, relayURL, groupID string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildLeaveGroupEvent(groupID, previousIDs, keys)
 		if err != nil {
@@ -267,22 +291,22 @@ func leaveGroupCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs
 }
 
 // fetchGroupMetaCmd fetches a kind-39000 event to resolve the group name.
-func fetchGroupMetaCmd(pool *nostr.SimplePool, relayURL, groupID string) tea.Cmd {
+func fetchGroupMetaCmd(pool *nostr.Pool, relayURL, groupID string) tea.Cmd {
 	return func() tea.Msg {
 		log.Printf("fetchGroupMeta: relay=%s group=%s", relayURL, groupID)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		re := pool.QuerySingle(ctx, []string{relayURL}, nostr.Filter{
-			Kinds: []int{nostr.KindSimpleGroupMetadata},
+			Kinds: []nostr.Kind{nostr.KindSimpleGroupMetadata},
 			Tags:  nostr.TagMap{"d": {groupID}},
-		})
+		}, nostr.SubscriptionOptions{})
 		if re == nil {
 			log.Printf("fetchGroupMeta: not found for %s on %s", groupID, relayURL)
 			return nil
 		}
 
-		g, err := nip29.NewGroupFromMetadataEvent(relayURL, re.Event)
+		g, err := nip29.NewGroupFromMetadataEvent(relayURL, &re.Event)
 		if err != nil {
 			log.Printf("fetchGroupMeta: merge error: %v", err)
 			return nil
@@ -293,7 +317,7 @@ func fetchGroupMetaCmd(pool *nostr.SimplePool, relayURL, groupID string) tea.Cmd
 			return nil
 		}
 		log.Printf("fetchGroupMeta: resolved %s -> %q", groupID, name)
-		return groupMetaMsg{RelayURL: relayURL, GroupID: groupID, Name: name, RelayPubKey: re.PubKey}
+		return groupMetaMsg{RelayURL: relayURL, GroupID: groupID, Name: name, RelayPubKey: re.PubKey.Hex()}
 	}
 }
 
@@ -379,7 +403,7 @@ func buildCreateGroupEvent(groupID, name string, keys Keys) (nostr.Event, error)
 }
 
 // createGroupCmd publishes a kind 9007 event to create a NIP-29 group on a relay.
-func createGroupCmd(pool *nostr.SimplePool, relayURL, name string, keys Keys) tea.Cmd {
+func createGroupCmd(pool *nostr.Pool, relayURL, name string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		// Generate random 8-hex-char group ID.
 		idBytes := make([]byte, 4)
@@ -425,7 +449,7 @@ func buildDeleteGroupEventEvent(groupID, eventID string, previousIDs []string, k
 }
 
 // deleteGroupEventCmd publishes a kind 9005 event to delete an event from a NIP-29 group.
-func deleteGroupEventCmd(pool *nostr.SimplePool, relayURL, groupID, eventID string, previousIDs []string, keys Keys) tea.Cmd {
+func deleteGroupEventCmd(pool *nostr.Pool, relayURL, groupID, eventID string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildDeleteGroupEventEvent(groupID, eventID, previousIDs, keys)
 		if err != nil {
@@ -464,7 +488,7 @@ func buildCreateGroupInviteEvent(groupID string, previousIDs []string, keys Keys
 }
 
 // createGroupInviteCmd publishes a kind 9009 event to create an invite for a NIP-29 group.
-func createGroupInviteCmd(pool *nostr.SimplePool, relayURL, groupID string, previousIDs []string, keys Keys) tea.Cmd {
+func createGroupInviteCmd(pool *nostr.Pool, relayURL, groupID string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildCreateGroupInviteEvent(groupID, previousIDs, keys)
 		if err != nil {
@@ -484,7 +508,7 @@ func createGroupInviteCmd(pool *nostr.SimplePool, relayURL, groupID string, prev
 		// The invite code is typically returned as the event content by the relay.
 		code := evt.Content
 		if code == "" {
-			code = shortPK(evt.GetID())
+			code = shortPK(evt.GetID().Hex())
 		}
 
 		log.Printf("createGroupInviteCmd: invite for group %s on %s: %s", groupID, relayURL, code)
@@ -493,7 +517,7 @@ func createGroupInviteCmd(pool *nostr.SimplePool, relayURL, groupID string, prev
 }
 
 // inviteDMCmd sends a DM with a group invite in host'groupid format.
-func inviteDMCmd(pool *nostr.SimplePool, relays []string, relayURL, groupID, groupName, recipientPK string, keys Keys, kr nostr.Keyer) tea.Cmd {
+func inviteDMCmd(pool *nostr.Pool, relays []string, relayURL, groupID, groupName, recipientPK string, keys Keys, kr nostr.Keyer) tea.Cmd {
 	return func() tea.Msg {
 		host := strings.TrimPrefix(relayURL, "wss://")
 		dmText := fmt.Sprintf("You've been invited to ~%s\n\n%s'%s", groupName, host, groupID)
@@ -519,7 +543,7 @@ func buildPutUserEvent(groupID, pubkey string, previousIDs []string, keys Keys) 
 }
 
 // putUserCmd publishes a kind 9000 event to add a user to a NIP-29 group.
-func putUserCmd(pool *nostr.SimplePool, relayURL, groupID, pubkey string, previousIDs []string, keys Keys) tea.Cmd {
+func putUserCmd(pool *nostr.Pool, relayURL, groupID, pubkey string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildPutUserEvent(groupID, pubkey, previousIDs, keys)
 		if err != nil {
@@ -565,7 +589,7 @@ func buildEditGroupMetadataEvent(groupID string, fields map[string]string, previ
 }
 
 // editGroupMetadataCmd publishes a kind 9002 event to edit group metadata.
-func editGroupMetadataCmd(pool *nostr.SimplePool, relayURL, groupID string, fields map[string]string, previousIDs []string, keys Keys) tea.Cmd {
+func editGroupMetadataCmd(pool *nostr.Pool, relayURL, groupID string, fields map[string]string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildEditGroupMetadataEvent(groupID, fields, previousIDs, keys)
 		if err != nil {

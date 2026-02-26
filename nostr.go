@@ -5,22 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip19"
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip05"
+	"fiatjaf.com/nostr/nip19"
+	"fiatjaf.com/nostr/nip65"
 )
 
 // Keys holds the user's nostr key pair.
 type Keys struct {
-	SK     string
-	PK     string
-	NPub   string
+	SK   nostr.SecretKey
+	PK   nostr.PubKey
+	NPub string
 }
 
 // ChatMessage represents a message displayed in the TUI.
@@ -71,7 +73,7 @@ func loadKeys(cfg Config) (Keys, error) {
 		return Keys{}, fmt.Errorf("no private key: set private_key_file in config or NOSTR_PRIVATE_KEY env var")
 	}
 
-	sk := raw
+	var sk nostr.SecretKey
 	if strings.HasPrefix(raw, "nsec") {
 		prefix, val, err := nip19.Decode(raw)
 		if err != nil {
@@ -80,18 +82,17 @@ func loadKeys(cfg Config) (Keys, error) {
 		if prefix != "nsec" {
 			return Keys{}, fmt.Errorf("expected nsec prefix, got %s", prefix)
 		}
-		sk = val.(string)
+		sk = val.(nostr.SecretKey)
+	} else {
+		var err error
+		sk, err = nostr.SecretKeyFromHex(raw)
+		if err != nil {
+			return Keys{}, fmt.Errorf("failed to parse hex secret key: %w", err)
+		}
 	}
 
-	pk, err := nostr.GetPublicKey(sk)
-	if err != nil {
-		return Keys{}, fmt.Errorf("failed to derive public key: %w", err)
-	}
-
-	npub, err := nip19.EncodePublicKey(pk)
-	if err != nil {
-		return Keys{}, fmt.Errorf("failed to encode npub: %w", err)
-	}
+	pk := nostr.GetPublicKey(sk)
+	npub := nip19.EncodeNpub(pk)
 
 	return Keys{SK: sk, PK: pk, NPub: npub}, nil
 }
@@ -99,26 +100,32 @@ func loadKeys(cfg Config) (Keys, error) {
 // fetchProfileCmd fetches a kind-0 event (NIP-01 profile metadata) for a pubkey.
 // If not found on the user's relays, looks up the peer's NIP-65 relay list
 // and tries their write relays.
-func fetchProfileCmd(pool *nostr.SimplePool, relays []string, pubkey string) tea.Cmd {
+func fetchProfileCmd(pool *nostr.Pool, relays []string, pubkey string) tea.Cmd {
 	return func() tea.Msg {
 		log.Printf("fetchProfile: pubkey=%s", shortPK(pubkey))
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		pk, err := nostr.PubKeyFromHex(pubkey)
+		if err != nil {
+			log.Printf("fetchProfile: invalid pubkey %s: %v", shortPK(pubkey), err)
+			return profileResolvedMsg{PubKey: pubkey, DisplayName: shortPK(pubkey)}
+		}
+
 		re := pool.QuerySingle(ctx, relays, nostr.Filter{
-			Kinds:   []int{0},
-			Authors: []string{pubkey},
-		})
+			Kinds:   []nostr.Kind{nostr.KindProfileMetadata},
+			Authors: []nostr.PubKey{pk},
+		}, nostr.SubscriptionOptions{})
 
 		// If not found locally, check the peer's NIP-65 relay list for their write relays.
 		if re == nil {
-			peerRelays := getPeerRelays(pool, relays, pubkey)
+			peerRelays := getPeerRelays(pool, relays, pk)
 			if len(peerRelays) > 0 {
 				log.Printf("fetchProfile: not on local relays, trying %d peer relays for %s", len(peerRelays), shortPK(pubkey))
 				re = pool.QuerySingle(ctx, peerRelays, nostr.Filter{
-					Kinds:   []int{0},
-					Authors: []string{pubkey},
-				})
+					Kinds:   []nostr.Kind{nostr.KindProfileMetadata},
+					Authors: []nostr.PubKey{pk},
+				}, nostr.SubscriptionOptions{})
 			}
 		}
 
@@ -159,7 +166,7 @@ func buildProfileEvent(profile ProfileConfig, keys Keys) (nostr.Event, error) {
 	}
 
 	evt := nostr.Event{
-		Kind:      0,
+		Kind:      nostr.KindProfileMetadata,
 		CreatedAt: nostr.Now(),
 		Content:   string(content),
 	}
@@ -170,7 +177,7 @@ func buildProfileEvent(profile ProfileConfig, keys Keys) (nostr.Event, error) {
 }
 
 // publishProfileCmd publishes a kind-0 event with the user's profile metadata.
-func publishProfileCmd(pool *nostr.SimplePool, relays []string, profile ProfileConfig, keys Keys) tea.Cmd {
+func publishProfileCmd(pool *nostr.Pool, relays []string, profile ProfileConfig, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildProfileEvent(profile, keys)
 		if err != nil {
@@ -197,45 +204,21 @@ type nip05ResolvedMsg struct {
 // resolveNIP05Cmd resolves a NIP-05 internet identifier to a hex pubkey.
 func resolveNIP05Cmd(identifier string) tea.Cmd {
 	return func() tea.Msg {
-		parts := strings.SplitN(identifier, "@", 2)
-		if len(parts) != 2 {
+		if !nip05.IsValidIdentifier(identifier) {
 			return nip05ResolvedMsg{Identifier: identifier, Err: fmt.Errorf("invalid NIP-05 identifier: %s", identifier)}
 		}
-		name, domain := parts[0], parts[1]
 
-		url := fmt.Sprintf("https://%s/.well-known/nostr.json?name=%s", domain, name)
-		log.Printf("resolveNIP05: fetching %s", url)
+		log.Printf("resolveNIP05: resolving %s", identifier)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		pp, err := nip05.QueryIdentifier(ctx, identifier)
 		if err != nil {
 			return nip05ResolvedMsg{Identifier: identifier, Err: err}
 		}
 
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return nip05ResolvedMsg{Identifier: identifier, Err: err}
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != 200 {
-			return nip05ResolvedMsg{Identifier: identifier, Err: fmt.Errorf("HTTP %d from %s", resp.StatusCode, domain)}
-		}
-
-		var result struct {
-			Names map[string]string `json:"names"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return nip05ResolvedMsg{Identifier: identifier, Err: fmt.Errorf("bad JSON from %s: %v", domain, err)}
-		}
-
-		pk, ok := result.Names[name]
-		if !ok {
-			return nip05ResolvedMsg{Identifier: identifier, Err: fmt.Errorf("name %q not found on %s", name, domain)}
-		}
-
+		pk := pp.PublicKey.Hex()
 		log.Printf("resolveNIP05: %s -> %s", identifier, shortPK(pk))
 		return nip05ResolvedMsg{Identifier: identifier, PubKey: pk}
 	}
@@ -294,12 +277,12 @@ type nip51ListsFetchedMsg struct {
 
 // nip51PublishResultMsg is returned after publishing a NIP-51 list event.
 type nip51PublishResultMsg struct {
-	listKind int
+	listKind nostr.Kind
 	err      error
 }
 
 // fetchNIP51ListsCmd queries relays for the user's kind 30000, 10005, and 10009 lists.
-func fetchNIP51ListsCmd(pool *nostr.SimplePool, relays []string, keys Keys, kr nostr.Keyer) tea.Cmd {
+func fetchNIP51ListsCmd(pool *nostr.Pool, relays []string, keys Keys, kr nostr.Keyer) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -308,12 +291,12 @@ func fetchNIP51ListsCmd(pool *nostr.SimplePool, relays []string, keys Keys, kr n
 
 		// Kind 30000 "Chat-Friends" (parameterized replaceable)
 		re := pool.QuerySingle(ctx, relays, nostr.Filter{
-			Kinds:   []int{nostr.KindCategorizedPeopleList},
-			Authors: []string{keys.PK},
+			Kinds:   []nostr.Kind{nostr.KindCategorizedPeopleList},
+			Authors: []nostr.PubKey{keys.PK},
 			Tags:    nostr.TagMap{"d": {"Chat-Friends"}},
-		})
+		}, nostr.SubscriptionOptions{})
 		if re != nil {
-			contacts, err := parseContactsListEvent(ctx, re.Event, kr)
+			contacts, err := parseContactsListEvent(ctx, &re.Event, kr)
 			if err != nil {
 				log.Printf("fetchNIP51Lists: contacts parse error: %v", err)
 			} else {
@@ -325,11 +308,11 @@ func fetchNIP51ListsCmd(pool *nostr.SimplePool, relays []string, keys Keys, kr n
 
 		// Kind 10005 (public chat list, standard replaceable)
 		re = pool.QuerySingle(ctx, relays, nostr.Filter{
-			Kinds:   []int{nostr.KindPublicChatList},
-			Authors: []string{keys.PK},
-		})
+			Kinds:   []nostr.Kind{nostr.KindPublicChatList},
+			Authors: []nostr.PubKey{keys.PK},
+		}, nostr.SubscriptionOptions{})
 		if re != nil {
-			channels := parsePublicChatsListEvent(re.Event)
+			channels := parsePublicChatsListEvent(&re.Event)
 			result.channels = channels
 			result.channelsTS = re.CreatedAt
 			log.Printf("fetchNIP51Lists: got %d channels (ts=%d)", len(channels), re.CreatedAt)
@@ -337,11 +320,11 @@ func fetchNIP51ListsCmd(pool *nostr.SimplePool, relays []string, keys Keys, kr n
 
 		// Kind 10009 (simple group list, standard replaceable)
 		re = pool.QuerySingle(ctx, relays, nostr.Filter{
-			Kinds:   []int{nostr.KindSimpleGroupList},
-			Authors: []string{keys.PK},
-		})
+			Kinds:   []nostr.Kind{nostr.KindSimpleGroupList},
+			Authors: []nostr.PubKey{keys.PK},
+		}, nostr.SubscriptionOptions{})
 		if re != nil {
-			groups := parseSimpleGroupsListEvent(re.Event)
+			groups := parseSimpleGroupsListEvent(&re.Event)
 			result.groups = groups
 			result.groupsTS = re.CreatedAt
 			log.Printf("fetchNIP51Lists: got %d groups (ts=%d)", len(groups), re.CreatedAt)
@@ -352,7 +335,7 @@ func fetchNIP51ListsCmd(pool *nostr.SimplePool, relays []string, keys Keys, kr n
 }
 
 // publishContactsListCmd builds and publishes a kind 30000 "Chat-Friends" event.
-func publishContactsListCmd(pool *nostr.SimplePool, relays []string, contacts []Contact, keys Keys, kr nostr.Keyer) tea.Cmd {
+func publishContactsListCmd(pool *nostr.Pool, relays []string, contacts []Contact, keys Keys, kr nostr.Keyer) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
@@ -372,7 +355,7 @@ func publishContactsListCmd(pool *nostr.SimplePool, relays []string, contacts []
 }
 
 // publishPublicChatsListCmd builds and publishes a kind 10005 event.
-func publishPublicChatsListCmd(pool *nostr.SimplePool, relays []string, channels []Channel, keys Keys) tea.Cmd {
+func publishPublicChatsListCmd(pool *nostr.Pool, relays []string, channels []Channel, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
@@ -392,7 +375,7 @@ func publishPublicChatsListCmd(pool *nostr.SimplePool, relays []string, channels
 }
 
 // publishSimpleGroupsListCmd builds and publishes a kind 10009 event.
-func publishSimpleGroupsListCmd(pool *nostr.SimplePool, relays []string, groups []Group, keys Keys) tea.Cmd {
+func publishSimpleGroupsListCmd(pool *nostr.Pool, relays []string, groups []Group, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
@@ -409,4 +392,28 @@ func publishSimpleGroupsListCmd(pool *nostr.SimplePool, relays []string, groups 
 		}()
 		return nip51PublishResultMsg{listKind: nostr.KindSimpleGroupList}
 	}
+}
+
+// getPeerRelays fetches the NIP-65 relay list (kind 10002) for a pubkey
+// and returns the write relay URLs. Falls back to nil if not found.
+func getPeerRelays(pool *nostr.Pool, relays []string, pubkey nostr.PubKey) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	re := pool.QuerySingle(ctx, relays, nostr.Filter{
+		Kinds:   []nostr.Kind{nostr.KindRelayListMetadata},
+		Authors: []nostr.PubKey{pubkey},
+	}, nostr.SubscriptionOptions{})
+	if re == nil {
+		return nil
+	}
+
+	_, writeRelays := nip65.ParseRelayList(re.Event)
+	log.Printf("getPeerRelays: %s -> %v", shortPK(pubkey.Hex()), writeRelays)
+	return writeRelays
+}
+
+// containsStr is replaced by slices.Contains but kept as an alias for readability.
+func containsStr(sl []string, s string) bool {
+	return slices.Contains(sl, s)
 }

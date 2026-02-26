@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip19"
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip19"
 )
 
 func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
@@ -48,11 +48,12 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		if item := m.activeSidebarItem(); item != nil {
 			switch it := item.(type) {
 			case ChannelItem:
-				nevent, err := nip19.EncodeEvent(it.Channel.ID, m.relays, "")
+				id, err := nostr.IDFromHex(it.Channel.ID)
 				if err != nil {
-					m.addSystemMsg(fmt.Sprintf("encode error: %v", err))
+					m.addSystemMsg(fmt.Sprintf("invalid channel ID: %v", err))
 					return m, nil
 				}
+				nevent := nip19.EncodeNevent(id, m.relays, nostr.PubKey{})
 				m.qrOverlay = renderQR("#"+it.Channel.Name, "nostr:"+nevent)
 				return m, nil
 			case GroupItem:
@@ -584,7 +585,11 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 func (m *model) groupNaddr(g Group) (string, error) {
 	author := g.RelayPubKey
 	if author == "" {
-		author = m.keys.PK
+		author = m.keys.PK.Hex()
 	}
-	return nip19.EncodeEntity(author, nostr.KindSimpleGroupMetadata, g.GroupID, []string{g.RelayURL})
+	pk, err := nostr.PubKeyFromHex(author)
+	if err != nil {
+		return "", fmt.Errorf("invalid pubkey: %w", err)
+	}
+	return nip19.EncodeNaddr(pk, nostr.KindSimpleGroupMetadata, g.GroupID, []string{g.RelayURL}), nil
 }

@@ -133,11 +133,6 @@ func (m *model) handleChannelSubStarted(msg channelSubStartedMsg) (tea.Model, te
 	log.Println("channelSubStartedMsg received")
 	m.cancelRoomSub()
 	m.roomSub = &roomSub{kind: SidebarChannel, roomID: msg.channelID, events: msg.events, cancel: msg.cancel}
-	if item := m.activeSidebarItem(); item != nil {
-		if ci, ok := item.(ChannelItem); ok {
-			m.addSystemMsg("subscribed to #" + ci.Channel.Name)
-		}
-	}
 	return m, m.waitForRoomEvent()
 }
 
@@ -148,7 +143,6 @@ func (m *model) handleDMSubStarted(msg dmSubStartedMsg) (tea.Model, tea.Cmd) {
 	}
 	m.dmEvents = msg.events
 	m.dmCancel = msg.cancel
-	m.addSystemMsg("DM subscription active")
 	return m, waitForDMEvent(m.dmEvents, m.keys)
 }
 
@@ -275,11 +269,6 @@ func (m *model) handleGroupSubStarted(msg groupSubStartedMsg) (tea.Model, tea.Cm
 	m.roomSub = &roomSub{kind: SidebarGroup, roomID: msg.groupKey, events: msg.events, cancel: msg.cancel}
 	if _, ok := m.groupRecentIDs[msg.groupKey]; !ok {
 		m.groupRecentIDs[msg.groupKey] = nil
-	}
-	if item := m.activeSidebarItem(); item != nil {
-		if gi, ok := item.(GroupItem); ok {
-			m.addSystemMsg("subscribed to ~" + gi.Group.Name)
-		}
 	}
 	return m, m.waitForRoomEvent()
 }

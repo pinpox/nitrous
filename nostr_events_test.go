@@ -4,22 +4,16 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/nbd-wtf/go-nostr"
-	"github.com/nbd-wtf/go-nostr/nip19"
+	"fiatjaf.com/nostr"
+	"fiatjaf.com/nostr/nip19"
 )
 
 // testKeys generates a fresh keypair for testing.
 func testKeys(t *testing.T) Keys {
 	t.Helper()
-	sk := nostr.GeneratePrivateKey()
-	pk, err := nostr.GetPublicKey(sk)
-	if err != nil {
-		t.Fatalf("GetPublicKey: %v", err)
-	}
-	npub, err := nip19.EncodePublicKey(pk)
-	if err != nil {
-		t.Fatalf("EncodePublicKey: %v", err)
-	}
+	sk := nostr.Generate()
+	pk := nostr.GetPublicKey(sk)
+	npub := nip19.EncodeNpub(pk)
 	return Keys{SK: sk, PK: pk, NPub: npub}
 }
 
@@ -50,8 +44,8 @@ func TestBuildCreateChannelEvent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if evt.Kind != 40 {
-		t.Errorf("Kind = %d, want 40", evt.Kind)
+	if evt.Kind != nostr.KindChannelCreation {
+		t.Errorf("Kind = %d, want %d", evt.Kind, nostr.KindChannelCreation)
 	}
 
 	// Content should be valid JSON with name field.
@@ -65,8 +59,8 @@ func TestBuildCreateChannelEvent(t *testing.T) {
 		t.Errorf("content name = %q, want %q", meta.Name, "test-channel")
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -80,8 +74,8 @@ func TestBuildChannelMessageEvent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if evt.Kind != 42 {
-		t.Errorf("Kind = %d, want 42", evt.Kind)
+	if evt.Kind != nostr.KindChannelMessage {
+		t.Errorf("Kind = %d, want %d", evt.Kind, nostr.KindChannelMessage)
 	}
 	if evt.Content != content {
 		t.Errorf("Content = %q, want %q", evt.Content, content)
@@ -99,8 +93,8 @@ func TestBuildChannelMessageEvent(t *testing.T) {
 		t.Error("missing [\"e\", channelID, \"\", \"root\"] tag")
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -118,8 +112,8 @@ func TestBuildProfileEvent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if evt.Kind != 0 {
-		t.Errorf("Kind = %d, want 0", evt.Kind)
+	if evt.Kind != nostr.KindProfileMetadata {
+		t.Errorf("Kind = %d, want %d", evt.Kind, nostr.KindProfileMetadata)
 	}
 
 	// Content should be valid JSON with all profile fields.
@@ -140,8 +134,8 @@ func TestBuildProfileEvent(t *testing.T) {
 		t.Errorf("picture = %q, want %q", meta["picture"], "https://example.com/alice.png")
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -175,8 +169,8 @@ func TestBuildDMRelaysEvent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if evt.Kind != 10050 {
-		t.Errorf("Kind = %d, want 10050", evt.Kind)
+	if evt.Kind != nostr.KindDMRelayList {
+		t.Errorf("Kind = %d, want %d", evt.Kind, nostr.KindDMRelayList)
 	}
 
 	// Check relay tags.
@@ -194,8 +188,8 @@ func TestBuildDMRelaysEvent(t *testing.T) {
 		t.Error("missing relay tag for wss://relay1.com")
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -223,8 +217,8 @@ func TestBuildGroupMessageEvent(t *testing.T) {
 		t.Error("missing 'previous' tags")
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -245,8 +239,8 @@ func TestBuildJoinGroupEvent(t *testing.T) {
 		if hasTagKey(evt, "code") {
 			t.Error("should not have 'code' tag without invite code")
 		}
-		if ok, err := evt.CheckSignature(); err != nil || !ok {
-			t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+		if !evt.VerifySignature() {
+			t.Error("invalid signature")
 		}
 	})
 
@@ -258,8 +252,8 @@ func TestBuildJoinGroupEvent(t *testing.T) {
 		if !hasTag(evt, "code", "secret123") {
 			t.Error("missing [\"code\", \"secret123\"] tag")
 		}
-		if ok, err := evt.CheckSignature(); err != nil || !ok {
-			t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+		if !evt.VerifySignature() {
+			t.Error("invalid signature")
 		}
 	})
 }
@@ -281,8 +275,8 @@ func TestBuildLeaveGroupEvent(t *testing.T) {
 		t.Error("missing 'previous' tag")
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -303,8 +297,8 @@ func TestBuildCreateGroupEvent(t *testing.T) {
 		t.Error("missing [\"name\", \"My Group\"] tag")
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -326,8 +320,8 @@ func TestBuildDeleteGroupEventEvent(t *testing.T) {
 		t.Errorf("missing [\"e\", %q] tag", eventID)
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -349,8 +343,8 @@ func TestBuildPutUserEvent(t *testing.T) {
 		t.Errorf("missing [\"p\", %q] tag", userPK)
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -374,8 +368,8 @@ func TestBuildEditGroupMetadataEvent(t *testing.T) {
 			t.Error("missing [\"name\", \"New Name\"] tag")
 		}
 
-		if ok, err := evt.CheckSignature(); err != nil || !ok {
-			t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+		if !evt.VerifySignature() {
+			t.Error("invalid signature")
 		}
 	})
 
@@ -414,8 +408,8 @@ func TestBuildCreateGroupInviteEvent(t *testing.T) {
 		t.Error("missing [\"h\", \"grp1\"] tag")
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -442,8 +436,8 @@ func TestBuildBlossomAuthEvent(t *testing.T) {
 		t.Error("missing 'expiration' tag")
 	}
 
-	if ok, err := evt.CheckSignature(); err != nil || !ok {
-		t.Errorf("invalid signature: ok=%v err=%v", ok, err)
+	if !evt.VerifySignature() {
+		t.Error("invalid signature")
 	}
 }
 
@@ -481,7 +475,7 @@ func TestEventBuildersPubKeyConsistency(t *testing.T) {
 				t.Fatalf("build error: %v", err)
 			}
 			if evt.PubKey != keys.PK {
-				t.Errorf("PubKey = %q, want %q", evt.PubKey, keys.PK)
+				t.Errorf("PubKey = %q, want %q", evt.PubKey.Hex(), keys.PK.Hex())
 			}
 		})
 	}

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 )
 
 // Channel represents a NIP-28 channel (kind 40 creation event).
@@ -46,16 +46,22 @@ type channelCreatedMsg struct {
 }
 
 // fetchChannelMetaCmd fetches a kind-40 event by ID to resolve the channel name.
-func fetchChannelMetaCmd(pool *nostr.SimplePool, relays []string, eventID string) tea.Cmd {
+func fetchChannelMetaCmd(pool *nostr.Pool, relays []string, eventID string) tea.Cmd {
 	return func() tea.Msg {
 		log.Printf("fetchChannelMeta: id=%s", eventID)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
+		id, err := nostr.IDFromHex(eventID)
+		if err != nil {
+			log.Printf("fetchChannelMeta: invalid event ID %s: %v", eventID, err)
+			return channelMetaMsg{ID: eventID, Name: shortPK(eventID)}
+		}
+
 		re := pool.QuerySingle(ctx, relays, nostr.Filter{
-			IDs:   []string{eventID},
-			Kinds: []int{40},
-		})
+			IDs:   []nostr.ID{id},
+			Kinds: []nostr.Kind{nostr.KindChannelCreation},
+		}, nostr.SubscriptionOptions{})
 		if re == nil {
 			log.Printf("fetchChannelMeta: not found for %s", eventID)
 			return channelMetaMsg{ID: eventID, Name: shortPK(eventID)}
@@ -79,7 +85,7 @@ func buildCreateChannelEvent(name string, keys Keys) (nostr.Event, error) {
 	}{Name: name})
 
 	evt := nostr.Event{
-		Kind:      40,
+		Kind:      nostr.KindChannelCreation,
 		CreatedAt: nostr.Now(),
 		Content:   string(meta),
 	}
@@ -90,7 +96,7 @@ func buildCreateChannelEvent(name string, keys Keys) (nostr.Event, error) {
 }
 
 // createChannelCmd publishes a kind-40 event to create a NIP-28 channel.
-func createChannelCmd(pool *nostr.SimplePool, relays []string, name string, keys Keys) tea.Cmd {
+func createChannelCmd(pool *nostr.Pool, relays []string, name string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		log.Printf("createChannelCmd: starting for %q", name)
 		evt, err := buildCreateChannelEvent(name, keys)
@@ -106,21 +112,21 @@ func createChannelCmd(pool *nostr.SimplePool, relays []string, name string, keys
 		}()
 
 		id := evt.GetID()
-		log.Printf("createChannelCmd: created %q -> %s", name, id)
-		return channelCreatedMsg{ID: id, Name: name}
+		log.Printf("createChannelCmd: created %q -> %s", name, id.Hex())
+		return channelCreatedMsg{ID: id.Hex(), Name: name}
 	}
 }
 
 // subscribeChannelCmd opens a channel subscription inside a tea.Cmd so it doesn't block Init/Update.
-func subscribeChannelCmd(pool *nostr.SimplePool, relays []string, channelID string) tea.Cmd {
+func subscribeChannelCmd(pool *nostr.Pool, relays []string, channelID string) tea.Cmd {
 	return func() tea.Msg {
 		log.Printf("subscribeChannelCmd: channelID=%s", channelID)
 		ctx, cancel := context.WithCancel(context.Background())
 		ch := pool.SubscribeMany(ctx, relays, nostr.Filter{
-			Kinds: []int{42},
+			Kinds: []nostr.Kind{nostr.KindChannelMessage},
 			Tags:  nostr.TagMap{"e": {channelID}},
 			Limit: 50,
-		})
+		}, nostr.SubscriptionOptions{})
 		return channelSubStartedMsg{channelID: channelID, events: ch, cancel: cancel}
 	}
 }
@@ -141,11 +147,11 @@ func waitForChannelEvent(events <-chan nostr.RelayEvent, channelID string, keys 
 			return channelSubEndedMsg{channelID: channelID}
 		}
 		return channelEventMsg(ChatMessage{
-			Author:    shortPK(re.PubKey),
-			PubKey:    re.PubKey,
+			Author:    shortPK(re.PubKey.Hex()),
+			PubKey:    re.PubKey.Hex(),
 			Content:   re.Content,
 			Timestamp: re.CreatedAt,
-			EventID:   re.ID,
+			EventID:   re.ID.Hex(),
 			ChannelID: channelID,
 			IsMine:    re.PubKey == keys.PK,
 		})
@@ -155,7 +161,7 @@ func waitForChannelEvent(events <-chan nostr.RelayEvent, channelID string, keys 
 // buildChannelMessageEvent builds a kind-42 message event for a NIP-28 channel.
 func buildChannelMessageEvent(channelID, content string, keys Keys) (nostr.Event, error) {
 	evt := nostr.Event{
-		Kind:      42,
+		Kind:      nostr.KindChannelMessage,
 		CreatedAt: nostr.Now(),
 		Tags: nostr.Tags{
 			{"e", channelID, "", "root"},
@@ -170,7 +176,7 @@ func buildChannelMessageEvent(channelID, content string, keys Keys) (nostr.Event
 
 // publishChannelMessage signs and publishes a kind-42 message to a channel.
 // Returns a channelEventMsg with the local message so it appears immediately.
-func publishChannelMessage(pool *nostr.SimplePool, relays []string, channelID string, content string, keys Keys) tea.Cmd {
+func publishChannelMessage(pool *nostr.Pool, relays []string, channelID string, content string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildChannelMessageEvent(channelID, content, keys)
 		if err != nil {
@@ -184,11 +190,11 @@ func publishChannelMessage(pool *nostr.SimplePool, relays []string, channelID st
 		}()
 
 		return channelEventMsg(ChatMessage{
-			Author:    shortPK(keys.PK),
-			PubKey:    keys.PK,
+			Author:    shortPK(keys.PK.Hex()),
+			PubKey:    keys.PK.Hex(),
 			Content:   content,
 			Timestamp: evt.CreatedAt,
-			EventID:   evt.GetID(),
+			EventID:   evt.GetID().Hex(),
 			ChannelID: channelID,
 			IsMine:    true,
 		})

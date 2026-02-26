@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/nbd-wtf/go-nostr"
+	"fiatjaf.com/nostr"
 )
 
 // selfEncrypt encrypts plaintext to ourselves using NIP-44 via the Keyer interface.

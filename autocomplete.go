@@ -280,7 +280,7 @@ func (m *model) mentionSuggestions(text string) []string {
 
 	var suggestions []string
 	for _, pk := range authors {
-		if pk == m.keys.PK {
+		if pk == m.keys.PK.Hex() {
 			continue // skip self
 		}
 		name := m.resolveAuthor(pk)
