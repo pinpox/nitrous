@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -80,9 +81,12 @@ func fetchChannelMetaCmd(pool *nostr.Pool, relays []string, eventID string) tea.
 
 // buildCreateChannelEvent builds a kind-40 event to create a NIP-28 channel.
 func buildCreateChannelEvent(name string, keys Keys) (nostr.Event, error) {
-	meta, _ := json.Marshal(struct {
+	meta, err := json.Marshal(struct {
 		Name string `json:"name"`
 	}{Name: name})
+	if err != nil {
+		return nostr.Event{}, fmt.Errorf("marshal channel meta: %w", err)
+	}
 
 	evt := nostr.Event{
 		Kind:      nostr.KindChannelCreation,

@@ -284,7 +284,7 @@ func leaveGroupCmd(pool *nostr.Pool, relayURL, groupID string, previousIDs []str
 			return nostrErrMsg{fmt.Errorf("group leave: connect %s: %w", relayURL, err)}
 		}
 		if err := r.Publish(ctx, evt); err != nil {
-			log.Printf("leaveGroupCmd: publish failed (may already be left): %v", err)
+			return nostrErrMsg{fmt.Errorf("group leave: publish to %s group %s: %w", relayURL, groupID, err)}
 		}
 		log.Printf("leaveGroupCmd: sent kind 9022 to %s for group %s", relayURL, groupID)
 		return nil
@@ -509,11 +509,10 @@ func createGroupInviteCmd(pool *nostr.Pool, relayURL, groupID string, previousID
 			return nostrErrMsg{fmt.Errorf("create invite: publish: %w", err)}
 		}
 
-		// The invite code is typically returned as the event content by the relay.
-		code := evt.Content
-		if code == "" {
-			code = shortPK(evt.GetID().Hex())
-		}
+		// Use the event ID as the invite code; r.Publish does not return
+		// relay-generated content, and buildCreateGroupInviteEvent leaves
+		// Content empty, so the event ID is the only stable identifier.
+		code := evt.GetID().Hex()
 
 		log.Printf("createGroupInviteCmd: invite for group %s on %s: %s", groupID, relayURL, code)
 		return groupInviteCreatedMsg{RelayURL: relayURL, GroupID: groupID, Code: code}
@@ -523,7 +522,7 @@ func createGroupInviteCmd(pool *nostr.Pool, relayURL, groupID string, previousID
 // inviteDMCmd sends a DM with a group invite in host'groupid format.
 func inviteDMCmd(pool *nostr.Pool, relays []string, relayURL, groupID, groupName, recipientPK string, keys Keys, kr nostr.Keyer) tea.Cmd {
 	return func() tea.Msg {
-		host := strings.TrimPrefix(relayURL, "wss://")
+		host := strings.TrimPrefix(strings.TrimPrefix(relayURL, "wss://"), "ws://")
 		dmText := fmt.Sprintf("You've been invited to ~%s\n\n%s'%s", groupName, host, groupID)
 		// Reuse sendDM logic inline — call the returned Cmd directly.
 		return sendDM(pool, relays, recipientPK, dmText, keys, kr)()

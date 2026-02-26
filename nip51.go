@@ -62,6 +62,9 @@ func buildContactsListEvent(ctx context.Context, contacts []Contact, keys Keys, 
 // parseContactsListEvent decrypts and parses a kind 30000 "Chat-Friends" event
 // into a slice of Contacts.
 func parseContactsListEvent(ctx context.Context, evt *nostr.Event, kr nostr.Keyer) ([]Contact, error) {
+	if evt == nil {
+		return nil, nil
+	}
 	if evt.Content == "" {
 		return nil, nil
 	}
@@ -119,6 +122,9 @@ func buildPublicChatsListEvent(channels []Channel, keys Keys) (nostr.Event, erro
 // Channel names are not stored in the event; callers should resolve names
 // via fetchChannelMetaCmd.
 func parsePublicChatsListEvent(evt *nostr.Event) []Channel {
+	if evt == nil {
+		return nil
+	}
 	var channels []Channel
 	for _, tag := range evt.Tags {
 		if len(tag) >= 2 && tag[0] == "e" {
@@ -154,6 +160,9 @@ func buildSimpleGroupsListEvent(groups []Group, keys Keys) (nostr.Event, error) 
 
 // parseSimpleGroupsListEvent extracts groups from a kind 10009 event.
 func parseSimpleGroupsListEvent(evt *nostr.Event) []SavedGroup {
+	if evt == nil {
+		return nil
+	}
 	var groups []SavedGroup
 	for _, tag := range evt.Tags {
 		if len(tag) < 3 || tag[0] != "group" {

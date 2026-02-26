@@ -138,6 +138,10 @@ func (m *model) updateViewport() {
 		author := authorStyle.Render(displayName)
 		// Convert single newlines to paragraph breaks for glamour.
 		mdContent := strings.ReplaceAll(msg.Content, "\n", "\n\n")
+		// Replace single newlines with double, then collapse runs of 3+ into double.
+		for strings.Contains(mdContent, "\n\n\n") {
+			mdContent = strings.ReplaceAll(mdContent, "\n\n\n", "\n\n")
+		}
 		content := renderMarkdown(m.mdRender, mdContent)
 		prefix := fmt.Sprintf("%s %s: ", ts, author)
 		prefixW := lipgloss.Width(prefix)

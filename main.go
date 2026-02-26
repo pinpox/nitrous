@@ -43,8 +43,12 @@ func main() {
 	}
 
 	cfgPath := configPath(*configFlag)
+	isKeygen := len(flag.Args()) > 0 && flag.Args()[0] == "keygen"
+
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		initFirstRun(cfgPath)
+		if !isKeygen {
+			initFirstRun(cfgPath)
+		}
 	}
 
 	cfg, err := LoadConfig(*configFlag)
@@ -54,7 +58,7 @@ func main() {
 	}
 	log.Printf("config loaded: %d relays", len(cfg.Relays))
 
-	if len(flag.Args()) > 0 && flag.Args()[0] == "keygen" {
+	if isKeygen {
 		runKeygen(cfg)
 		return
 	}
@@ -153,9 +157,12 @@ func runKeygen(cfg Config) {
 		os.Exit(1)
 	}
 	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			path = filepath.Join(home, path[2:])
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: cannot resolve home directory: %v\n", err)
+			os.Exit(1)
 		}
+		path = filepath.Join(home, path[2:])
 	}
 
 	if _, err := os.Stat(path); err == nil {

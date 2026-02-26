@@ -13,6 +13,15 @@ import (
 	"fiatjaf.com/nostr"
 )
 
+// sanitizeName removes tab and newline characters from a name to prevent
+// corruption of the tab-delimited storage files.
+func sanitizeName(name string) string {
+	name = strings.ReplaceAll(name, "\t", " ")
+	name = strings.ReplaceAll(name, "\n", " ")
+	name = strings.ReplaceAll(name, "\r", " ")
+	return name
+}
+
 type ProfileConfig struct {
 	Name        string `toml:"name"`
 	DisplayName string `toml:"display_name"`
@@ -168,8 +177,19 @@ func SaveLastDMSeen(cfgFlagPath string, ts nostr.Timestamp) error {
 	return os.WriteFile(path, []byte(strconv.FormatInt(int64(ts), 10)+"\n"), 0644)
 }
 
-// AppendRoom adds a room to the rooms file. Creates the file and parent dirs if needed.
+// AppendRoom adds a room to the rooms file if not already present.
+// Creates the file and parent dirs if needed.
 func AppendRoom(cfgFlagPath string, room Room) error {
+	existing, err := LoadRooms(cfgFlagPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, r := range existing {
+		if r.ID == room.ID {
+			return nil
+		}
+	}
+
 	path := roomsPath(cfgFlagPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
@@ -179,7 +199,7 @@ func AppendRoom(cfgFlagPath string, room Room) error {
 		return err
 	}
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s\t%s\n", room.Name, room.ID)
+	_, err = fmt.Fprintf(f, "%s\t%s\n", sanitizeName(room.Name), room.ID)
 	return err
 }
 
@@ -225,7 +245,7 @@ func RemoveRoom(cfgFlagPath string, id string) error {
 	path := roomsPath(cfgFlagPath)
 	var lines []string
 	for _, r := range kept {
-		lines = append(lines, fmt.Sprintf("%s\t%s", r.Name, r.ID))
+		lines = append(lines, fmt.Sprintf("%s\t%s", sanitizeName(r.Name), r.ID))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
@@ -300,7 +320,7 @@ func AppendContact(cfgFlagPath string, contact Contact) error {
 		return err
 	}
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s\t%s\n", contact.Name, contact.PubKey)
+	_, err = fmt.Fprintf(f, "%s\t%s\n", sanitizeName(contact.Name), contact.PubKey)
 	return err
 }
 
@@ -322,7 +342,7 @@ func RemoveContact(cfgFlagPath string, pubkey string) error {
 	path := contactsPath(cfgFlagPath)
 	var lines []string
 	for _, c := range kept {
-		lines = append(lines, fmt.Sprintf("%s\t%s", c.Name, c.PubKey))
+		lines = append(lines, fmt.Sprintf("%s\t%s", sanitizeName(c.Name), c.PubKey))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
@@ -399,7 +419,7 @@ func AppendSavedGroup(cfgFlagPath string, group SavedGroup) error {
 		return err
 	}
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "%s\t%s\t%s\n", group.Name, group.RelayURL, group.GroupID)
+	_, err = fmt.Fprintf(f, "%s\t%s\t%s\n", sanitizeName(group.Name), group.RelayURL, group.GroupID)
 	return err
 }
 
@@ -421,7 +441,7 @@ func RemoveSavedGroup(cfgFlagPath string, relayURL, groupID string) error {
 	path := groupsPath(cfgFlagPath)
 	var lines []string
 	for _, g := range kept {
-		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", g.Name, g.RelayURL, g.GroupID))
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", sanitizeName(g.Name), g.RelayURL, g.GroupID))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
@@ -448,7 +468,7 @@ func UpdateSavedGroupName(cfgFlagPath string, relayURL, groupID, newName string)
 	path := groupsPath(cfgFlagPath)
 	var lines []string
 	for _, g := range groups {
-		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", g.Name, g.RelayURL, g.GroupID))
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", sanitizeName(g.Name), g.RelayURL, g.GroupID))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }
@@ -462,7 +482,7 @@ func WriteContacts(cfgFlagPath string, contacts []Contact) error {
 	}
 	var lines []string
 	for _, c := range contacts {
-		lines = append(lines, fmt.Sprintf("%s\t%s", c.Name, c.PubKey))
+		lines = append(lines, fmt.Sprintf("%s\t%s", sanitizeName(c.Name), c.PubKey))
 	}
 	data := ""
 	if len(lines) > 0 {
@@ -480,7 +500,7 @@ func WriteRooms(cfgFlagPath string, rooms []Room) error {
 	}
 	var lines []string
 	for _, r := range rooms {
-		lines = append(lines, fmt.Sprintf("%s\t%s", r.Name, r.ID))
+		lines = append(lines, fmt.Sprintf("%s\t%s", sanitizeName(r.Name), r.ID))
 	}
 	data := ""
 	if len(lines) > 0 {
@@ -498,7 +518,7 @@ func WriteSavedGroups(cfgFlagPath string, groups []SavedGroup) error {
 	}
 	var lines []string
 	for _, g := range groups {
-		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", g.Name, g.RelayURL, g.GroupID))
+		lines = append(lines, fmt.Sprintf("%s\t%s\t%s", sanitizeName(g.Name), g.RelayURL, g.GroupID))
 	}
 	data := ""
 	if len(lines) > 0 {
@@ -530,7 +550,7 @@ func UpdateContactName(cfgFlagPath string, pubkey, newName string) error {
 	path := contactsPath(cfgFlagPath)
 	var lines []string
 	for _, c := range contacts {
-		lines = append(lines, fmt.Sprintf("%s\t%s", c.Name, c.PubKey))
+		lines = append(lines, fmt.Sprintf("%s\t%s", sanitizeName(c.Name), c.PubKey))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 }

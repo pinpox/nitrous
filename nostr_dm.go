@@ -195,11 +195,9 @@ func publishDMRelaysCmd(pool *nostr.Pool, relays []string, keys Keys) tea.Cmd {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		go func() {
-			defer cancel()
-			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
-			log.Printf("publishDMRelays: published kind 10050 with %d relays", len(relays))
-		}()
+		defer cancel()
+		drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+		log.Printf("publishDMRelays: published kind 10050 with %d relays", len(relays))
 		return dmRelaysPublishedMsg{}
 	}
 }

@@ -75,7 +75,11 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 			m.addSystemMsg("/delete only works in a NIP-29 group")
 			return m, nil
 		}
-		gi := m.activeSidebarItem().(GroupItem)
+		gi, ok := m.activeSidebarItem().(GroupItem)
+		if !ok {
+			m.addSystemMsg("unexpected sidebar item type")
+			return m, nil
+		}
 		g := gi.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
 		if arg != "" {

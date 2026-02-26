@@ -5,9 +5,33 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+const seenEventsTTL = 30 * time.Minute
+const seenEventsCleanInterval = 5 * time.Minute
+
+// isSeenEvent checks whether an event ID has already been seen.
+func (m *model) isSeenEvent(eventID string) bool {
+	_, ok := m.seenEvents[eventID]
+	return ok
+}
+
+// markSeenEvent records an event ID and periodically evicts stale entries.
+func (m *model) markSeenEvent(eventID string) {
+	now := time.Now()
+	m.seenEvents[eventID] = now
+	if now.Sub(m.seenEventsClean) > seenEventsCleanInterval {
+		for k, ts := range m.seenEvents {
+			if now.Sub(ts) > seenEventsTTL {
+				delete(m.seenEvents, k)
+			}
+		}
+		m.seenEventsClean = now
+	}
+}
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -155,10 +179,10 @@ func (m *model) handleChannelEvent(msg channelEventMsg) (tea.Model, tea.Cmd) {
 	cm := ChatMessage(msg)
 	log.Printf("channelEventMsg: author=%s channel=%s id=%s", cm.Author, cm.ChannelID, cm.EventID)
 	sub := m.roomSubs[cm.ChannelID]
-	if m.seenEvents[cm.EventID] {
+	if m.isSeenEvent(cm.EventID) {
 		return m, waitForRoomSub(sub, m.keys)
 	}
-	m.seenEvents[cm.EventID] = true
+	m.markSeenEvent(cm.EventID)
 	chID := cm.ChannelID
 	m.msgs[chID] = appendMessage(m.msgs[chID], cm, m.cfg.MaxMessages)
 	if chID == m.activeChannelID() {
@@ -177,20 +201,20 @@ func (m *model) handleChannelEvent(msg channelEventMsg) (tea.Model, tea.Cmd) {
 func (m *model) handleDMEvent(msg dmEventMsg) (tea.Model, tea.Cmd) {
 	cm := ChatMessage(msg)
 	log.Printf("dmEventMsg: author=%s id=%s mine=%v", cm.Author, cm.EventID, cm.IsMine)
-	if m.seenEvents[cm.EventID] {
+	if m.isSeenEvent(cm.EventID) {
 		if m.dmEvents != nil {
 			return m, waitForDMEvent(m.dmEvents, m.keys)
 		}
 		return m, nil
 	}
-	m.seenEvents[cm.EventID] = true
+	m.markSeenEvent(cm.EventID)
 
 	// Content-based dedup for our own DMs: the local echo from sendDM and
 	// the relay echo from the subscription have different synthetic EventIDs,
 	// so seenEvents can't catch the duplicate. Track by peer+content instead.
 	if cm.IsMine {
 		echoKey := cm.PubKey + ":" + cm.Content
-		if m.localDMEchoes[echoKey] {
+		if _, ok := m.localDMEchoes[echoKey]; ok {
 			log.Printf("dmEventMsg: skipping relay echo (already have local echo)")
 			delete(m.localDMEchoes, echoKey)
 			if m.dmEvents != nil {
@@ -198,7 +222,15 @@ func (m *model) handleDMEvent(msg dmEventMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		m.localDMEchoes[echoKey] = true
+		// Evict stale entries older than 5 minutes before adding a new one.
+		const localDMEchoTTL = 5 * time.Minute
+		now := time.Now()
+		for k, ts := range m.localDMEchoes {
+			if now.Sub(ts) > localDMEchoTTL {
+				delete(m.localDMEchoes, k)
+			}
+		}
+		m.localDMEchoes[echoKey] = now
 	}
 
 	peer := cm.PubKey
@@ -289,10 +321,10 @@ func (m *model) handleGroupEvent(msg groupEventMsg) (tea.Model, tea.Cmd) {
 	log.Printf("groupEventMsg: author=%s group=%s id=%s", cm.Author, cm.GroupKey, cm.EventID)
 	gk := cm.GroupKey
 	sub := m.roomSubs[gk]
-	if m.seenEvents[cm.EventID] {
+	if m.isSeenEvent(cm.EventID) {
 		return m, waitForRoomSub(sub, m.keys)
 	}
-	m.seenEvents[cm.EventID] = true
+	m.markSeenEvent(cm.EventID)
 	// Track recent event IDs for NIP-29 "previous" tags.
 	ids := m.groupRecentIDs[gk]
 	ids = append(ids, cm.EventID)
