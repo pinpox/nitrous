@@ -179,6 +179,30 @@ func AppendRoom(cfgFlagPath string, room Room) error {
 	return err
 }
 
+// UpdateRoomName rewrites the room's name in the rooms file.
+// If the room doesn't exist, it appends it.
+func UpdateRoomName(cfgFlagPath string, id, newName string) error {
+	rooms, err := LoadRooms(cfgFlagPath)
+	if err != nil {
+		rooms = nil
+	}
+	found := false
+	for i, r := range rooms {
+		if r.ID == id {
+			if r.Name == newName {
+				return nil // no change needed
+			}
+			rooms[i].Name = newName
+			found = true
+			break
+		}
+	}
+	if !found {
+		rooms = append(rooms, Room{Name: newName, ID: id})
+	}
+	return WriteRooms(cfgFlagPath, rooms)
+}
+
 // RemoveRoom removes a room by ID from the rooms file.
 func RemoveRoom(cfgFlagPath string, id string) error {
 	rooms, err := LoadRooms(cfgFlagPath)
@@ -409,6 +433,60 @@ func UpdateSavedGroupName(cfgFlagPath string, relayURL, groupID, newName string)
 		lines = append(lines, fmt.Sprintf("%s %s %s", g.Name, g.RelayURL, g.GroupID))
 	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644)
+}
+
+// WriteContacts rewrites the entire contacts file with the given contacts.
+// Used after syncing from NIP-51 relay data.
+func WriteContacts(cfgFlagPath string, contacts []Contact) error {
+	path := contactsPath(cfgFlagPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	var lines []string
+	for _, c := range contacts {
+		lines = append(lines, fmt.Sprintf("%s %s", c.Name, c.PubKey))
+	}
+	data := ""
+	if len(lines) > 0 {
+		data = strings.Join(lines, "\n") + "\n"
+	}
+	return os.WriteFile(path, []byte(data), 0644)
+}
+
+// WriteRooms rewrites the entire rooms file with the given rooms.
+// Used after syncing from NIP-51 relay data.
+func WriteRooms(cfgFlagPath string, rooms []Room) error {
+	path := roomsPath(cfgFlagPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	var lines []string
+	for _, r := range rooms {
+		lines = append(lines, fmt.Sprintf("%s %s", r.Name, r.ID))
+	}
+	data := ""
+	if len(lines) > 0 {
+		data = strings.Join(lines, "\n") + "\n"
+	}
+	return os.WriteFile(path, []byte(data), 0644)
+}
+
+// WriteSavedGroups rewrites the entire groups file with the given groups.
+// Used after syncing from NIP-51 relay data.
+func WriteSavedGroups(cfgFlagPath string, groups []SavedGroup) error {
+	path := groupsPath(cfgFlagPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	var lines []string
+	for _, g := range groups {
+		lines = append(lines, fmt.Sprintf("%s %s %s", g.Name, g.RelayURL, g.GroupID))
+	}
+	data := ""
+	if len(lines) > 0 {
+		data = strings.Join(lines, "\n") + "\n"
+	}
+	return os.WriteFile(path, []byte(data), 0644)
 }
 
 // UpdateContactName rewrites the contact's name in the contacts file.
