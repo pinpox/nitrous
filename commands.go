@@ -495,11 +495,8 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 		ch := it.Channel
 
 		// Cancel subscription if this is the active one.
-		if ch.ID == m.channelSubID && m.channelCancel != nil {
-			m.channelCancel()
-			m.channelEvents = nil
-			m.channelCancel = nil
-			m.channelSubID = ""
+		if m.roomSub != nil && m.roomSub.roomID == ch.ID {
+			m.cancelRoomSub()
 		}
 
 		// Remove from sidebar and message history.
@@ -519,11 +516,8 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 		gk := groupKey(g.RelayURL, g.GroupID)
 
 		// Cancel subscription if this is the active one.
-		if gk == m.groupSubKey && m.groupCancel != nil {
-			m.groupCancel()
-			m.groupEvents = nil
-			m.groupCancel = nil
-			m.groupSubKey = ""
+		if m.roomSub != nil && m.roomSub.roomID == gk {
+			m.cancelRoomSub()
 		}
 
 		// Remove from sidebar and message history.

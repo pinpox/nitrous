@@ -131,18 +131,14 @@ func (m *model) handleChannelMeta(msg channelMetaMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleChannelSubStarted(msg channelSubStartedMsg) (tea.Model, tea.Cmd) {
 	log.Println("channelSubStartedMsg received")
-	if m.channelCancel != nil {
-		m.channelCancel()
-	}
-	m.channelSubID = msg.channelID
-	m.channelEvents = msg.events
-	m.channelCancel = msg.cancel
+	m.cancelRoomSub()
+	m.roomSub = &roomSub{kind: SidebarChannel, roomID: msg.channelID, events: msg.events, cancel: msg.cancel}
 	if item := m.activeSidebarItem(); item != nil {
 		if ci, ok := item.(ChannelItem); ok {
 			m.addSystemMsg("subscribed to #" + ci.Channel.Name)
 		}
 	}
-	return m, waitForChannelEvent(m.channelEvents, m.channelSubID, m.keys)
+	return m, m.waitForRoomEvent()
 }
 
 func (m *model) handleDMSubStarted(msg dmSubStartedMsg) (tea.Model, tea.Cmd) {
@@ -160,8 +156,8 @@ func (m *model) handleChannelEvent(msg channelEventMsg) (tea.Model, tea.Cmd) {
 	cm := ChatMessage(msg)
 	log.Printf("channelEventMsg: author=%s channel=%s id=%s", cm.Author, cm.ChannelID, cm.EventID)
 	if m.seenEvents[cm.EventID] {
-		if m.channelEvents != nil {
-			return m, waitForChannelEvent(m.channelEvents, m.channelSubID, m.keys)
+		if m.roomSub != nil {
+			return m, m.waitForRoomEvent()
 		}
 		return m, nil
 	}
@@ -177,8 +173,8 @@ func (m *model) handleChannelEvent(msg channelEventMsg) (tea.Model, tea.Cmd) {
 	if profileCmd := m.maybeRequestProfile(cm.PubKey); profileCmd != nil {
 		batchCmds = append(batchCmds, profileCmd)
 	}
-	if m.channelEvents != nil {
-		batchCmds = append(batchCmds, waitForChannelEvent(m.channelEvents, m.channelSubID, m.keys))
+	if m.roomSub != nil {
+		batchCmds = append(batchCmds, m.waitForRoomEvent())
 	}
 	return m, tea.Batch(batchCmds...)
 }
@@ -258,7 +254,7 @@ func (m *model) handleDMReconnect(msg dmReconnectMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleChannelSubEnded(msg channelSubEndedMsg) (tea.Model, tea.Cmd) {
 	log.Printf("channelSubEndedMsg: channel %s subscription ended, scheduling reconnect", shortPK(msg.channelID))
-	m.channelEvents = nil
+	m.roomSub = nil
 	if msg.channelID == m.activeChannelID() {
 		m.addSystemMsg("channel subscription lost, reconnecting...")
 	}
@@ -275,12 +271,8 @@ func (m *model) handleChannelReconnect(msg channelReconnectMsg) (tea.Model, tea.
 
 func (m *model) handleGroupSubStarted(msg groupSubStartedMsg) (tea.Model, tea.Cmd) {
 	log.Println("groupSubStartedMsg received")
-	if m.groupCancel != nil {
-		m.groupCancel()
-	}
-	m.groupSubKey = msg.groupKey
-	m.groupEvents = msg.events
-	m.groupCancel = msg.cancel
+	m.cancelRoomSub()
+	m.roomSub = &roomSub{kind: SidebarGroup, roomID: msg.groupKey, events: msg.events, cancel: msg.cancel}
 	if _, ok := m.groupRecentIDs[msg.groupKey]; !ok {
 		m.groupRecentIDs[msg.groupKey] = nil
 	}
@@ -289,17 +281,15 @@ func (m *model) handleGroupSubStarted(msg groupSubStartedMsg) (tea.Model, tea.Cm
 			m.addSystemMsg("subscribed to ~" + gi.Group.Name)
 		}
 	}
-	subRelayURL, _ := splitGroupKey(m.groupSubKey)
-	return m, waitForGroupEvent(m.groupEvents, m.groupSubKey, subRelayURL, m.keys)
+	return m, m.waitForRoomEvent()
 }
 
 func (m *model) handleGroupEvent(msg groupEventMsg) (tea.Model, tea.Cmd) {
 	cm := ChatMessage(msg)
 	log.Printf("groupEventMsg: author=%s group=%s id=%s", cm.Author, cm.GroupKey, cm.EventID)
 	if m.seenEvents[cm.EventID] {
-		if m.groupEvents != nil {
-			subRelayURL, _ := splitGroupKey(m.groupSubKey)
-			return m, waitForGroupEvent(m.groupEvents, m.groupSubKey, subRelayURL, m.keys)
+		if m.roomSub != nil {
+			return m, m.waitForRoomEvent()
 		}
 		return m, nil
 	}
@@ -322,16 +312,15 @@ func (m *model) handleGroupEvent(msg groupEventMsg) (tea.Model, tea.Cmd) {
 	if profileCmd := m.maybeRequestProfile(cm.PubKey); profileCmd != nil {
 		batchCmds = append(batchCmds, profileCmd)
 	}
-	if m.groupEvents != nil {
-		subRelayURL, _ := splitGroupKey(m.groupSubKey)
-		batchCmds = append(batchCmds, waitForGroupEvent(m.groupEvents, m.groupSubKey, subRelayURL, m.keys))
+	if m.roomSub != nil {
+		batchCmds = append(batchCmds, m.waitForRoomEvent())
 	}
 	return m, tea.Batch(batchCmds...)
 }
 
 func (m *model) handleGroupSubEnded(msg groupSubEndedMsg) (tea.Model, tea.Cmd) {
 	log.Printf("groupSubEndedMsg: group %s subscription ended, scheduling reconnect", msg.groupKey)
-	m.groupEvents = nil
+	m.roomSub = nil
 	if msg.groupKey == m.activeGroupKey() {
 		m.addSystemMsg("group subscription lost, reconnecting...")
 	}
@@ -364,9 +353,8 @@ func (m *model) handleGroupMeta(msg groupMetaMsg) (tea.Model, tea.Cmd) {
 	metaCmds = append(metaCmds, publishSimpleGroupsListCmd(m.pool, m.relays, m.allGroups(), m.keys))
 	// Only re-wait if this metadata came from the group subscription;
 	// edit commands also return groupMetaMsg but must not spawn extra waiters.
-	if msg.FromSub && m.groupEvents != nil {
-		subRelayURL, _ := splitGroupKey(m.groupSubKey)
-		metaCmds = append(metaCmds, waitForGroupEvent(m.groupEvents, m.groupSubKey, subRelayURL, m.keys))
+	if msg.FromSub && m.roomSub != nil {
+		metaCmds = append(metaCmds, m.waitForRoomEvent())
 	}
 	return m, tea.Batch(metaCmds...)
 }
@@ -564,12 +552,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Dismiss QR overlay on any key (except ctrl+c which still quits).
 	if m.qrOverlay != "" {
 		if msg.String() == "ctrl+c" {
-			if m.channelCancel != nil {
-				m.channelCancel()
-			}
-			if m.groupCancel != nil {
-				m.groupCancel()
-			}
+			m.cancelRoomSub()
 			if m.dmCancel != nil {
 				m.dmCancel()
 			}
@@ -650,12 +633,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+c":
-		if m.channelCancel != nil {
-			m.channelCancel()
-		}
-		if m.groupCancel != nil {
-			m.groupCancel()
-		}
+		m.cancelRoomSub()
 		if m.dmCancel != nil {
 			m.dmCancel()
 		}

@@ -43,16 +43,11 @@ type model struct {
 	activeItem int
 	sidebar    []SidebarItem
 
-	// Channel subscription state
-	channelSubID  string // ID of the channel we're subscribed to
-	channelEvents <-chan nostr.RelayEvent
-	channelCancel context.CancelFunc
+	// Per-room subscription (channel or group); nil when none is active.
+	roomSub *roomSub
 
-	// NIP-29 Group subscription state
-	groupRecentIDs map[string][]string // per-group ring buffer of event IDs (max 50)
-	groupSubKey    string              // groupKey of the group we're subscribed to
-	groupEvents    <-chan nostr.RelayEvent
-	groupCancel    context.CancelFunc
+	// NIP-29 Group recent event IDs (per-group ring buffer, max 50)
+	groupRecentIDs map[string][]string
 
 	// DM subscription state
 	dmEvents   <-chan nostr.Event
@@ -106,6 +101,37 @@ type model struct {
 	contactsListTS nostr.Timestamp
 	channelsListTS nostr.Timestamp
 	groupsListTS   nostr.Timestamp
+}
+
+// roomSub holds the active per-room subscription (channel or group).
+type roomSub struct {
+	kind   SidebarKind
+	roomID string // channel ID or groupKey
+	events <-chan nostr.RelayEvent
+	cancel context.CancelFunc
+}
+
+// waitForRoomEvent returns a Cmd that waits for the next event on the active room subscription.
+func (m *model) waitForRoomEvent() tea.Cmd {
+	if m.roomSub == nil {
+		return nil
+	}
+	switch m.roomSub.kind {
+	case SidebarChannel:
+		return waitForChannelEvent(m.roomSub.events, m.roomSub.roomID, m.keys)
+	case SidebarGroup:
+		relayURL, _ := splitGroupKey(m.roomSub.roomID)
+		return waitForGroupEvent(m.roomSub.events, m.roomSub.roomID, relayURL, m.keys)
+	}
+	return nil
+}
+
+// cancelRoomSub cancels the active room subscription if any.
+func (m *model) cancelRoomSub() {
+	if m.roomSub != nil {
+		m.roomSub.cancel()
+		m.roomSub = nil
+	}
 }
 
 // isChannelSelected returns true if the active sidebar item is a channel.
