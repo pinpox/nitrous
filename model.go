@@ -43,6 +43,7 @@ type model struct {
 	//   len(channels)..len(channels)+len(groups)-1  = groups (~)
 	//   len(channels)+len(groups)..                  = DMs (@)
 	activeItem int
+	sidebar    []SidebarItem // unified sidebar list (temporary duplication with channels/groups/dmPeers)
 
 	// Channels
 	channels      []Channel
@@ -181,6 +182,28 @@ func (m *model) sidebarTotal() int {
 	return len(m.channels) + len(m.groups) + len(m.dmPeers)
 }
 
+// activeSidebarItem returns the currently selected SidebarItem, or nil.
+func (m *model) activeSidebarItem() SidebarItem {
+	if m.activeItem >= 0 && m.activeItem < len(m.sidebar) {
+		return m.sidebar[m.activeItem]
+	}
+	return nil
+}
+
+// rebuildSidebar reconstructs the sidebar slice from the current channels, groups, and dmPeers.
+func (m *model) rebuildSidebar() {
+	m.sidebar = make([]SidebarItem, 0, len(m.channels)+len(m.groups)+len(m.dmPeers))
+	for _, ch := range m.channels {
+		m.sidebar = append(m.sidebar, ChannelItem{Channel: ch})
+	}
+	for _, g := range m.groups {
+		m.sidebar = append(m.sidebar, GroupItem{Group: g})
+	}
+	for _, peer := range m.dmPeers {
+		m.sidebar = append(m.sidebar, DMItem{PubKey: peer, Name: m.resolveAuthor(peer)})
+	}
+}
+
 // subscribeIfNeeded returns a subscribe command if the active item changed type.
 func (m *model) subscribeIfNeeded(prev int) tea.Cmd {
 	if m.isChannelSelected() {
@@ -243,6 +266,22 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		profiles[c.PubKey] = c.Name
 	}
 
+	// Build initial sidebar.
+	sidebar := make([]SidebarItem, 0, len(channels)+len(groups)+len(dmPeers))
+	for _, ch := range channels {
+		sidebar = append(sidebar, ChannelItem{Channel: ch})
+	}
+	for _, g := range groups {
+		sidebar = append(sidebar, GroupItem{Group: g})
+	}
+	for _, peer := range dmPeers {
+		name := profiles[peer]
+		if name == "" {
+			name = shortPK(peer)
+		}
+		sidebar = append(sidebar, DMItem{PubKey: peer, Name: name})
+	}
+
 	return model{
 		cfg:         cfg,
 		cfgFlagPath: cfgFlagPath,
@@ -254,6 +293,7 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		width:       80,
 		height:      24,
 		activeItem:  0,
+		sidebar:     sidebar,
 		channels:       channels,
 		channelMsgs:    make(map[string][]ChatMessage),
 		groups:          groups,
