@@ -113,13 +113,13 @@ func (m *model) updateViewport() {
 	var msgs []ChatMessage
 	if m.isChannelSelected() && len(m.channels) > 0 {
 		chID := m.activeChannelID()
-		msgs = m.channelMsgs[chID]
+		msgs = m.msgs[chID]
 	} else if m.isGroupSelected() && len(m.groups) > 0 {
 		gk := m.activeGroupKey()
-		msgs = m.groupMsgs[gk]
+		msgs = m.msgs[gk]
 	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
 		peer := m.activeDMPeerPK()
-		msgs = m.dmMsgs[peer]
+		msgs = m.msgs[peer]
 	} else {
 		msgs = m.globalMsgs
 	}

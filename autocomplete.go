@@ -292,11 +292,11 @@ func (m *model) mentionSuggestions(text string) []string {
 func (m *model) currentChatAuthors() []string {
 	var msgs []ChatMessage
 	if m.isChannelSelected() && len(m.channels) > 0 {
-		msgs = m.channelMsgs[m.activeChannelID()]
+		msgs = m.msgs[m.activeChannelID()]
 	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		msgs = m.groupMsgs[m.activeGroupKey()]
+		msgs = m.msgs[m.activeGroupKey()]
 	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
-		msgs = m.dmMsgs[m.activeDMPeerPK()]
+		msgs = m.msgs[m.activeDMPeerPK()]
 	} else {
 		return nil
 	}
@@ -319,11 +319,11 @@ func (m *model) currentChatAuthors() []string {
 func (m *model) extractInviteAddresses() []string {
 	var msgs []ChatMessage
 	if m.isDMSelected() && len(m.dmPeers) > 0 {
-		msgs = m.dmMsgs[m.activeDMPeerPK()]
+		msgs = m.msgs[m.activeDMPeerPK()]
 	} else if m.isChannelSelected() && len(m.channels) > 0 {
-		msgs = m.channelMsgs[m.activeChannelID()]
+		msgs = m.msgs[m.activeChannelID()]
 	} else if m.isGroupSelected() && len(m.groups) > 0 {
-		msgs = m.groupMsgs[m.activeGroupKey()]
+		msgs = m.msgs[m.activeGroupKey()]
 	} else {
 		msgs = m.globalMsgs
 	}

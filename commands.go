@@ -78,10 +78,10 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		if arg != "" {
 			// Delete by explicit event ID (admin use).
 			// Remove from local messages.
-			msgs := m.groupMsgs[gk]
+			msgs := m.msgs[gk]
 			for i, cm := range msgs {
 				if cm.EventID == arg {
-					m.groupMsgs[gk] = append(msgs[:i], msgs[i+1:]...)
+					m.msgs[gk] = append(msgs[:i], msgs[i+1:]...)
 					break
 				}
 			}
@@ -89,7 +89,7 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 			return m, deleteGroupEventCmd(m.pool, g.RelayURL, g.GroupID, arg, m.groupRecentIDs[gk], m.keys)
 		}
 		// No arg: delete the last own message.
-		msgs := m.groupMsgs[gk]
+		msgs := m.msgs[gk]
 		var targetID string
 		var targetIdx int
 		for i := len(msgs) - 1; i >= 0; i-- {
@@ -103,7 +103,7 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 			m.addSystemMsg("no own message to delete")
 			return m, nil
 		}
-		m.groupMsgs[gk] = append(msgs[:targetIdx], msgs[targetIdx+1:]...)
+		m.msgs[gk] = append(msgs[:targetIdx], msgs[targetIdx+1:]...)
 		m.updateViewport()
 		return m, deleteGroupEventCmd(m.pool, g.RelayURL, g.GroupID, targetID, m.groupRecentIDs[gk], m.keys)
 
@@ -497,7 +497,7 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 
 		// Remove from channels list and message history.
 		m.channels = append(m.channels[:idx], m.channels[idx+1:]...)
-		delete(m.channelMsgs, ch.ID)
+		delete(m.msgs, ch.ID)
 
 		// Remove from rooms file.
 		if err := RemoveRoom(m.cfgFlagPath, ch.ID); err != nil {
@@ -521,7 +521,7 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 
 		// Remove from groups list and message history.
 		m.groups = append(m.groups[:idx], m.groups[idx+1:]...)
-		delete(m.groupMsgs, gk)
+		delete(m.msgs, gk)
 
 		// Remove from groups file.
 		if err := RemoveSavedGroup(m.cfgFlagPath, g.RelayURL, g.GroupID); err != nil {
@@ -542,7 +542,7 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 
 		// Remove from peers list and message history.
 		m.dmPeers = append(m.dmPeers[:idx], m.dmPeers[idx+1:]...)
-		delete(m.dmMsgs, peer)
+		delete(m.msgs, peer)
 
 		// Remove from contacts file.
 		if err := RemoveContact(m.cfgFlagPath, peer); err != nil {

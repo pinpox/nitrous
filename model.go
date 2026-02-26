@@ -47,25 +47,25 @@ type model struct {
 
 	// Channels
 	channels      []Channel
-	channelMsgs   map[string][]ChatMessage
 	channelSubID  string // ID of the channel we're subscribed to
 	channelEvents <-chan nostr.RelayEvent
 	channelCancel context.CancelFunc
 
 	// NIP-29 Groups
 	groups         []Group
-	groupMsgs      map[string][]ChatMessage // keyed by groupKey(relayURL, groupID)
-	groupRecentIDs map[string][]string      // per-group ring buffer of event IDs (max 50)
-	groupSubKey    string                   // groupKey of the group we're subscribed to
+	groupRecentIDs map[string][]string // per-group ring buffer of event IDs (max 50)
+	groupSubKey    string              // groupKey of the group we're subscribed to
 	groupEvents    <-chan nostr.RelayEvent
 	groupCancel    context.CancelFunc
 
 	// DMs
 	dmPeers    []string // pubkeys of DM peers
-	dmMsgs     map[string][]ChatMessage
 	dmEvents   <-chan nostr.Event
 	dmCancel   context.CancelFunc
 	lastDMSeen nostr.Timestamp
+
+	// Unified message store (keyed by channel ID, groupKey, or DM peer pubkey)
+	msgs map[string][]ChatMessage
 
 	// Components
 	viewport viewport.Model
@@ -295,12 +295,10 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.SimplePool,
 		activeItem:  0,
 		sidebar:     sidebar,
 		channels:       channels,
-		channelMsgs:    make(map[string][]ChatMessage),
 		groups:          groups,
-		groupMsgs:       make(map[string][]ChatMessage),
 		groupRecentIDs:  make(map[string][]string),
-		dmMsgs:         make(map[string][]ChatMessage),
 		dmPeers:        dmPeers,
+		msgs:           make(map[string][]ChatMessage),
 		lastDMSeen:     LoadLastDMSeen(cfgFlagPath),
 		dmSeenAtStart:  LoadLastDMSeen(cfgFlagPath),
 		seenEvents:     make(map[string]bool),
@@ -365,13 +363,13 @@ func (m *model) addSystemMsg(text string) {
 	}
 	if m.isChannelSelected() && len(m.channels) > 0 {
 		chID := m.activeChannelID()
-		m.channelMsgs[chID] = appendMessage(m.channelMsgs[chID], msg, m.cfg.MaxMessages)
+		m.msgs[chID] = appendMessage(m.msgs[chID], msg, m.cfg.MaxMessages)
 	} else if m.isGroupSelected() && len(m.groups) > 0 {
 		gk := m.activeGroupKey()
-		m.groupMsgs[gk] = appendMessage(m.groupMsgs[gk], msg, m.cfg.MaxMessages)
+		m.msgs[gk] = appendMessage(m.msgs[gk], msg, m.cfg.MaxMessages)
 	} else if m.isDMSelected() && len(m.dmPeers) > 0 {
 		peer := m.activeDMPeerPK()
-		m.dmMsgs[peer] = appendMessage(m.dmMsgs[peer], msg, m.cfg.MaxMessages)
+		m.msgs[peer] = appendMessage(m.msgs[peer], msg, m.cfg.MaxMessages)
 	} else {
 		m.globalMsgs = appendMessage(m.globalMsgs, msg, m.cfg.MaxMessages)
 	}

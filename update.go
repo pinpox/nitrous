@@ -170,7 +170,7 @@ func (m *model) handleChannelEvent(msg channelEventMsg) (tea.Model, tea.Cmd) {
 	}
 	m.seenEvents[cm.EventID] = true
 	chID := cm.ChannelID
-	m.channelMsgs[chID] = appendMessage(m.channelMsgs[chID], cm, m.cfg.MaxMessages)
+	m.msgs[chID] = appendMessage(m.msgs[chID], cm, m.cfg.MaxMessages)
 	if chID == m.activeChannelID() {
 		m.updateViewport()
 	} else {
@@ -214,7 +214,7 @@ func (m *model) handleDMEvent(msg dmEventMsg) (tea.Model, tea.Cmd) {
 	}
 
 	peer := cm.PubKey
-	m.dmMsgs[peer] = appendMessage(m.dmMsgs[peer], cm, m.cfg.MaxMessages)
+	m.msgs[peer] = appendMessage(m.msgs[peer], cm, m.cfg.MaxMessages)
 	newPeer := false
 	if !containsStr(m.dmPeers, peer) {
 		newPeer = true
@@ -313,7 +313,7 @@ func (m *model) handleGroupEvent(msg groupEventMsg) (tea.Model, tea.Cmd) {
 		ids = ids[len(ids)-50:]
 	}
 	m.groupRecentIDs[gk] = ids
-	m.groupMsgs[gk] = appendMessage(m.groupMsgs[gk], cm, m.cfg.MaxMessages)
+	m.msgs[gk] = appendMessage(m.msgs[gk], cm, m.cfg.MaxMessages)
 	if gk == m.activeGroupKey() {
 		m.updateViewport()
 	} else {
