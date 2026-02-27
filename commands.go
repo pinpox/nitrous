@@ -470,6 +470,10 @@ func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
 	if idx := m.findDMPeerIdx(pk); idx >= 0 {
 		m.activeItem = idx
 	}
+	// Load log history if no messages are loaded yet.
+	if len(m.msgs[pk]) == 0 {
+		m.loadHistory("dm", pk)
+	}
 	m.updateViewport()
 	if newPeer {
 		return m, publishContactsListCmd(m.pool, m.relays, contactsFromModel(m.allDMPeers(), m.profiles), m.keys, m.kr)

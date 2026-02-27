@@ -24,7 +24,17 @@ type Config struct {
 	BlossomServers []string      `toml:"blossom_servers"`
 	PrivateKeyFile string        `toml:"private_key_file"`
 	MaxMessages    int           `toml:"max_messages"`
+	Logging        *bool         `toml:"logging"`        // nil = default (true)
+	LogDir         string        `toml:"log_dir"`
 	Profile        ProfileConfig `toml:"profile"`
+}
+
+// LoggingEnabled returns whether message logging is enabled.
+func (c Config) LoggingEnabled() bool {
+	if c.Logging == nil {
+		return true // enabled by default
+	}
+	return *c.Logging
 }
 
 func defaultConfig() Config {

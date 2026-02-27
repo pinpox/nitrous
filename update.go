@@ -151,6 +151,10 @@ func (m *model) handleChannelSubStarted(msg channelSubStartedMsg) (tea.Model, te
 	m.cancelRoomSub(msg.channelID)
 	sub := &roomSub{kind: SidebarChannel, roomID: msg.channelID, events: msg.events, cancel: msg.cancel}
 	m.roomSubs[msg.channelID] = sub
+	// Load log history if no messages are loaded yet.
+	if len(m.msgs[msg.channelID]) == 0 {
+		m.loadHistory("channel", msg.channelID)
+	}
 	return m, waitForRoomSub(sub, m.keys)
 }
 
@@ -174,6 +178,7 @@ func (m *model) handleChannelEvent(msg channelEventMsg) (tea.Model, tea.Cmd) {
 	m.markSeenEvent(cm.EventID)
 	chID := cm.ChannelID
 	m.msgs[chID] = appendMessage(m.msgs[chID], cm, m.cfg.MaxMessages)
+	appendLogEntry(m.logDir, "channel", chID, cm, m.resolveAuthor(cm.PubKey))
 	if chID == m.activeChannelID() {
 		m.updateViewport()
 	} else {
@@ -224,6 +229,7 @@ func (m *model) handleDMEvent(msg dmEventMsg) (tea.Model, tea.Cmd) {
 
 	peer := cm.PubKey
 	m.msgs[peer] = appendMessage(m.msgs[peer], cm, m.cfg.MaxMessages)
+	appendLogEntry(m.logDir, "dm", peer, cm, m.resolveAuthor(cm.PubKey))
 
 	newPeer := false
 	if !m.containsDMPeer(peer) {
@@ -311,6 +317,10 @@ func (m *model) handleGroupSubStarted(msg groupSubStartedMsg) (tea.Model, tea.Cm
 	if _, ok := m.groupRecentIDs[msg.groupKey]; !ok {
 		m.groupRecentIDs[msg.groupKey] = nil
 	}
+	// Load log history if no messages are loaded yet.
+	if len(m.msgs[msg.groupKey]) == 0 {
+		m.loadHistory("group", msg.groupKey)
+	}
 	return m, waitForRoomSub(sub, m.keys)
 }
 
@@ -331,6 +341,7 @@ func (m *model) handleGroupEvent(msg groupEventMsg) (tea.Model, tea.Cmd) {
 	}
 	m.groupRecentIDs[gk] = ids
 	m.msgs[gk] = appendMessage(m.msgs[gk], cm, m.cfg.MaxMessages)
+	appendLogEntry(m.logDir, "group", gk, cm, m.resolveAuthor(cm.PubKey))
 	if gk == m.activeGroupKey() {
 		m.updateViewport()
 	} else {

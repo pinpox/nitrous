@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -103,6 +104,9 @@ type model struct {
 	contactsListTS nostr.Timestamp
 	channelsListTS nostr.Timestamp
 	groupsListTS   nostr.Timestamp
+
+	// Logging
+	logDir string // empty = logging disabled
 }
 
 // roomSub holds a per-room subscription (channel or group).
@@ -236,6 +240,16 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr no
 
 	lastSeen := LoadLastDMSeen(cfgFlagPath)
 
+	// Resolve log directory.
+	var logDir string
+	if cfg.LoggingEnabled() {
+		if cfg.LogDir != "" {
+			logDir = cfg.LogDir
+		} else {
+			logDir = filepath.Join(filepath.Dir(configPath(cfgFlagPath)), "logs")
+		}
+	}
+
 	return model{
 		cfg:         cfg,
 		cfgFlagPath: cfgFlagPath,
@@ -264,6 +278,7 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr no
 		mdRender:       mdRender,
 		mdStyle:        mdStyle,
 		statusMsg:      fmt.Sprintf("connected to %d relays", len(cfg.Relays)),
+		logDir:         logDir,
 	}
 }
 
@@ -365,6 +380,24 @@ func appendMessage(msgs []ChatMessage, msg ChatMessage, maxMessages int) []ChatM
 		msgs = msgs[len(msgs)-maxMessages:]
 	}
 	return msgs
+}
+
+// loadHistory loads message history from a log file and marks event IDs as seen.
+func (m *model) loadHistory(roomType, roomKey string) {
+	msgs, err := loadLogHistory(m.logDir, roomType, roomKey, m.cfg.MaxMessages)
+	if err != nil {
+		log.Printf("loadHistory: %v", err)
+		return
+	}
+	for _, msg := range msgs {
+		if msg.EventID != "" {
+			m.markSeenEvent(msg.EventID)
+		}
+		m.msgs[roomKey] = appendMessage(m.msgs[roomKey], msg, m.cfg.MaxMessages)
+	}
+	if len(msgs) > 0 {
+		log.Printf("loadHistory: loaded %d messages for %s/%s", len(msgs), roomType, roomKey)
+	}
 }
 
 // renderQR renders a QR code with a title line above it.

@@ -16,6 +16,11 @@ private_key_file = "~/.config/nitrous/nsec"
 
 max_messages = 500
 
+# Message logging — plain-text chat logs, one file per room.
+# Enabled by default. Set to false to disable.
+# logging = true
+# log_dir = "~/.config/nitrous/logs"
+
 # Your Nostr profile (NIP-01 kind 0), published to relays on startup.
 [profile]
 # name = ""

@@ -77,6 +77,24 @@ See ./config.example.toml for example documentation.
 | NIP-51 | Lists (contacts, public chats, simple groups) |
 | NIP-65 | Relay List Metadata |
 
+## Message Logging
+
+Nitrous logs all chat messages to plain-text files at
+`~/.config/nitrous/logs/` (one file per room). Format:
+
+```
+2024-01-15 10:30:45	e48be560	d9656344	alice	hey everyone
+```
+
+Fields: `timestamp \t eventID \t pubkey \t displayname \t content`
+
+Logs are human-readable — use `grep`, `less`, or `cat` to browse them.
+On startup, recent history is loaded from log files so messages persist
+across restarts.
+
+Disable with `logging = false` in `config.toml`. Customize the directory
+with `log_dir`.
+
 ## Testing
 
 ```sh
