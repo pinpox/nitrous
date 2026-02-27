@@ -176,21 +176,33 @@ func buildProfileEvent(profile ProfileConfig, keys Keys) (nostr.Event, error) {
 	return evt, nil
 }
 
+// profilePublishedMsg is returned after publishing a kind-0 profile event.
+type profilePublishedMsg struct {
+	err error
+}
+
 // publishProfileCmd publishes a kind-0 event with the user's profile metadata.
 func publishProfileCmd(pool *nostr.Pool, relays []string, profile ProfileConfig, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildProfileEvent(profile, keys)
 		if err != nil {
-			return nostrErrMsg{fmt.Errorf("publishProfile: %w", err)}
+			return profilePublishedMsg{err: fmt.Errorf("publishProfile: %w", err)}
 		}
-
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		go func() {
-			defer cancel()
-			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
-			log.Printf("publishProfile: published kind 0")
-		}()
-		return nil
+		defer cancel()
+		var successCount int
+		for res := range pool.PublishMany(ctx, relays, evt) {
+			if res.Error == nil {
+				successCount++
+			} else {
+				log.Printf("publishProfile: relay error: %v", res.Error)
+			}
+		}
+		if successCount == 0 {
+			return profilePublishedMsg{err: fmt.Errorf("failed to publish to any relay")}
+		}
+		log.Printf("publishProfile: published kind 0 to %d relays", successCount)
+		return profilePublishedMsg{}
 	}
 }
 
@@ -345,11 +357,9 @@ func publishContactsListCmd(pool *nostr.Pool, relays []string, contacts []Contac
 			return nip51PublishResultMsg{listKind: nostr.KindCategorizedPeopleList, err: err}
 		}
 
-		go func() {
-			defer cancel()
-			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
-			log.Printf("publishContactsList: published kind %d with %d contacts", nostr.KindCategorizedPeopleList, len(contacts))
-		}()
+		defer cancel()
+		drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+		log.Printf("publishContactsList: published kind %d with %d contacts", nostr.KindCategorizedPeopleList, len(contacts))
 		return nip51PublishResultMsg{listKind: nostr.KindCategorizedPeopleList}
 	}
 }
@@ -365,11 +375,9 @@ func publishPublicChatsListCmd(pool *nostr.Pool, relays []string, channels []Cha
 			return nip51PublishResultMsg{listKind: nostr.KindPublicChatList, err: err}
 		}
 
-		go func() {
-			defer cancel()
-			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
-			log.Printf("publishPublicChatsList: published kind %d with %d channels", nostr.KindPublicChatList, len(channels))
-		}()
+		defer cancel()
+		drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+		log.Printf("publishPublicChatsList: published kind %d with %d channels", nostr.KindPublicChatList, len(channels))
 		return nip51PublishResultMsg{listKind: nostr.KindPublicChatList}
 	}
 }
@@ -385,11 +393,9 @@ func publishSimpleGroupsListCmd(pool *nostr.Pool, relays []string, groups []Grou
 			return nip51PublishResultMsg{listKind: nostr.KindSimpleGroupList, err: err}
 		}
 
-		go func() {
-			defer cancel()
-			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
-			log.Printf("publishSimpleGroupsList: published kind %d with %d groups", nostr.KindSimpleGroupList, len(groups))
-		}()
+		defer cancel()
+		drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+		log.Printf("publishSimpleGroupsList: published kind %d with %d groups", nostr.KindSimpleGroupList, len(groups))
 		return nip51PublishResultMsg{listKind: nostr.KindSimpleGroupList}
 	}
 }

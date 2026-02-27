@@ -27,7 +27,7 @@ You can also set a key via the `NOSTR_PRIVATE_KEY` environment variable
 | `-debug`         | Enable debug logging to `debug.log` in the current directory   |
 
 The config path can also be set via the `NITROUS_CONFIG` environment variable.
-See ./config.example.toml for an example documentation.
+See ./config.example.toml for example documentation.
 
 ## Keybinds and commands
 

@@ -15,7 +15,7 @@ func testKeysWithKeyer(t *testing.T) (Keys, nostr.Keyer) {
 	sk := nostr.Generate()
 	pk := nostr.GetPublicKey(sk)
 	kr := keyer.NewPlainKeySigner(sk)
-	return Keys{SK: sk, PK: pk, NPub: "npub1test"}, &kr
+	return Keys{SK: sk, PK: pk, NPub: ""}, &kr
 }
 
 func TestSelfEncryptDecryptRoundtrip(t *testing.T) {

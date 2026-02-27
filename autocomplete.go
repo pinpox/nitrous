@@ -30,11 +30,6 @@ func (m *model) updateSuggestions() {
 	}
 
 	tokens := strings.Fields(text)
-	if len(tokens) == 0 {
-		m.acSuggestions = nil
-		m.acIndex = 0
-		return
-	}
 
 	// If input ends with a space, the user is starting a new token.
 	trailingSpace := len(text) > 0 && text[len(text)-1] == ' '
@@ -207,6 +202,9 @@ func (m *model) acceptSuggestion() {
 
 // viewAutocomplete renders suggestions as a horizontal row.
 func (m *model) viewAutocomplete() string {
+	if len(m.acSuggestions) == 0 {
+		return ""
+	}
 	maxWidth := m.viewport.Width
 
 	// Pre-render all items so we know their widths.
@@ -222,7 +220,9 @@ func (m *model) viewAutocomplete() string {
 	}
 
 	// Find a window of items that fits within maxWidth, ensuring the
-	// selected item is always visible.
+	// selected item is always visible.  Reserve space for the left/right
+	// scroll indicators so they don't push the output past maxWidth.
+	indicatorW := lipgloss.Width(acSuggestionStyle.Render("▸"))
 	start := m.acIndex
 	end := m.acIndex + 1
 	used := widths[m.acIndex]
@@ -230,12 +230,30 @@ func (m *model) viewAutocomplete() string {
 	// Expand right, then left, alternating to keep selection roughly centered.
 	for {
 		grew := false
-		if end < len(m.acSuggestions) && used+widths[end] <= maxWidth {
+		// Reserve indicator width when the window doesn't cover the edges.
+		rightRes := 0
+		if end < len(m.acSuggestions)-1 {
+			rightRes = indicatorW
+		}
+		leftRes := 0
+		if start > 1 {
+			leftRes = indicatorW
+		}
+		if end < len(m.acSuggestions) && used+widths[end]+rightRes+leftRes <= maxWidth {
 			used += widths[end]
 			end++
 			grew = true
 		}
-		if start > 0 && used+widths[start-1] <= maxWidth {
+		// Recalculate reservations after potential right expansion.
+		rightRes = 0
+		if end < len(m.acSuggestions) {
+			rightRes = indicatorW
+		}
+		leftRes = 0
+		if start > 1 {
+			leftRes = indicatorW
+		}
+		if start > 0 && used+widths[start-1]+rightRes+leftRes <= maxWidth {
 			start--
 			used += widths[start]
 			grew = true

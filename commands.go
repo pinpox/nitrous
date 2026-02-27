@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
@@ -74,7 +75,11 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 			m.addSystemMsg("/delete only works in a NIP-29 group")
 			return m, nil
 		}
-		gi := m.activeSidebarItem().(GroupItem)
+		gi, ok := m.activeSidebarItem().(GroupItem)
+		if !ok {
+			m.addSystemMsg("unexpected sidebar item type")
+			return m, nil
+		}
 		g := gi.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
 		if arg != "" {
@@ -337,6 +342,10 @@ func (m *model) inviteToGroup(input string) (tea.Model, tea.Cmd) {
 		}
 		pk = decoded.(nostr.PubKey).Hex()
 	} else if len(input) == 64 {
+		if _, err := hex.DecodeString(input); err != nil {
+			m.addSystemMsg("invalid hex pubkey")
+			return m, nil
+		}
 		pk = input
 	} else {
 		// Look up by display name in profiles (case-insensitive).

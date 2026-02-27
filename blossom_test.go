@@ -50,9 +50,8 @@ func TestIsFilePath(t *testing.T) {
 		}
 	})
 
-	t.Run("tilde path with existing file", func(t *testing.T) {
-		// Create a temp file and test with ~/... by faking it.
-		// We can't reliably test ~/ in CI, but we can test that non-existent ~/path returns false.
+	t.Run("tilde path nonexistent", func(t *testing.T) {
+		// We can't reliably test ~/ expansion in CI, but we can verify non-existent ~/path returns false.
 		if isFilePath("~/nonexistent_test_file_12345") {
 			t.Error("expected false for nonexistent ~/path")
 		}

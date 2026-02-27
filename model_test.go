@@ -72,6 +72,9 @@ func TestAppendMessage(t *testing.T) {
 		if len(msgs) != 2 {
 			t.Fatalf("expected 2 messages, got %d", len(msgs))
 		}
+		if msgs[1].Content != "b" {
+			t.Errorf("expected 'b' after 'a' for equal timestamps, got %q", msgs[1].Content)
+		}
 	})
 }
 

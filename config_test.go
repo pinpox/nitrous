@@ -49,7 +49,10 @@ func TestConfigPath(t *testing.T) {
 	t.Run("default when no flag or env", func(t *testing.T) {
 		t.Setenv("NITROUS_CONFIG", "")
 		got := configPath("")
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatalf("os.UserHomeDir() failed: %v", err)
+		}
 		want := filepath.Join(home, ".config", "nitrous", "config.toml")
 		if got != want {
 			t.Errorf("configPath default = %q, want %q", got, want)
@@ -186,15 +189,24 @@ func TestRemoveRoom(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = AppendRoom(cfgFile, Room{Name: "a", ID: "111"})
-	_ = AppendRoom(cfgFile, Room{Name: "b", ID: "222"})
-	_ = AppendRoom(cfgFile, Room{Name: "c", ID: "333"})
+	if err := AppendRoom(cfgFile, Room{Name: "a", ID: "111"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendRoom(cfgFile, Room{Name: "b", ID: "222"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendRoom(cfgFile, Room{Name: "c", ID: "333"}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := RemoveRoom(cfgFile, "222"); err != nil {
 		t.Fatal(err)
 	}
 
-	rooms, _ := LoadRooms(cfgFile)
+	rooms, err := LoadRooms(cfgFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(rooms) != 2 {
 		t.Fatalf("expected 2 rooms after remove, got %d", len(rooms))
 	}
@@ -306,6 +318,9 @@ func TestUpdateContactName(t *testing.T) {
 	}
 
 	contacts, _ := LoadContacts(cfgFile)
+	if len(contacts) != 2 {
+		t.Fatalf("expected 2 contacts, got %d", len(contacts))
+	}
 	if contacts[0].Name != "Alice_Updated" {
 		t.Errorf("expected Alice_Updated, got %q", contacts[0].Name)
 	}
@@ -391,6 +406,9 @@ func TestUpdateSavedGroupName(t *testing.T) {
 	}
 
 	groups, _ := LoadSavedGroups(cfgFile)
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(groups))
+	}
 	if groups[0].Name != "new" {
 		t.Errorf("expected name 'new', got %q", groups[0].Name)
 	}

@@ -20,5 +20,5 @@ max_messages = 500
 [profile]
 # name = ""
 # display_name = ""
-about = ""
+# about = ""
 # picture = "https://example.com/avatar.png"

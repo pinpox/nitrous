@@ -55,7 +55,7 @@ func (m *model) sidebarItemAt(y int) (int, bool) {
 func (m *model) sidebarWidth() int {
 	longest := 0
 	for _, it := range m.sidebar {
-		if n := len(it.DisplayName()); n > longest {
+		if n := lipgloss.Width(it.DisplayName()); n > longest {
 			longest = n
 		}
 	}
@@ -138,11 +138,18 @@ func (m *model) updateViewport() {
 		author := authorStyle.Render(displayName)
 		// Convert single newlines to paragraph breaks for glamour.
 		mdContent := strings.ReplaceAll(msg.Content, "\n", "\n\n")
+		// Replace single newlines with double, then collapse runs of 3+ into double.
+		for strings.Contains(mdContent, "\n\n\n") {
+			mdContent = strings.ReplaceAll(mdContent, "\n\n\n", "\n\n")
+		}
 		content := renderMarkdown(m.mdRender, mdContent)
 		prefix := fmt.Sprintf("%s %s: ", ts, author)
 		prefixW := lipgloss.Width(prefix)
 		pad := strings.Repeat(" ", prefixW)
 		wrapWidth := m.viewport.Width - prefixW
+		if wrapWidth < 1 {
+			wrapWidth = 1
+		}
 		// Trim leading/trailing blank lines from glamour output.
 		// strings.TrimSpace can't handle ANSI codes, and lipgloss.Width
 		// counts indentation spaces as visible. Strip ANSI first, then
@@ -211,8 +218,8 @@ func (m *model) viewSidebar() string {
 			break
 		}
 		name := it.Prefix() + it.DisplayName()
-		if len(name) > sw-2 {
-			name = name[:sw-2]
+		if lipgloss.Width(name) > sw-2 {
+			name = ansi.Truncate(name, sw-2, "")
 		}
 		if i == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))
@@ -230,8 +237,8 @@ func (m *model) viewSidebar() string {
 			continue
 		}
 		name := it.Prefix() + it.DisplayName()
-		if len(name) > sw-2 {
-			name = name[:sw-2]
+		if lipgloss.Width(name) > sw-2 {
+			name = ansi.Truncate(name, sw-2, "")
 		}
 		if i == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))
@@ -249,8 +256,8 @@ func (m *model) viewSidebar() string {
 			continue
 		}
 		name := it.Prefix() + it.DisplayName()
-		if len(name) > sw-2 {
-			name = name[:sw-2]
+		if lipgloss.Width(name) > sw-2 {
+			name = ansi.Truncate(name, sw-2, "")
 		}
 		if i == m.activeItem {
 			items = append(items, sidebarSelectedStyle.Render(name))

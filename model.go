@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -67,8 +68,9 @@ type model struct {
 	globalMsgs []ChatMessage
 
 	// Dedup
-	seenEvents   map[string]bool
-	localDMEchoes map[string]bool // "peer:content" keys for sent DMs awaiting relay echo
+	seenEvents      map[string]time.Time
+	seenEventsClean time.Time // last time stale entries were evicted
+	localDMEchoes map[string]time.Time // "peer:content" keys for sent DMs awaiting relay echo
 
 	// Unread indicators (keyed by channel ID, group key, or DM peer pubkey)
 	unread        map[string]bool
@@ -251,6 +253,8 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr no
 		sidebar = append(sidebar, DMItem{PubKey: c.PubKey, Name: name})
 	}
 
+	lastSeen := LoadLastDMSeen(cfgFlagPath)
+
 	return model{
 		cfg:         cfg,
 		cfgFlagPath: cfgFlagPath,
@@ -266,14 +270,16 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr no
 		roomSubs:        make(map[string]*roomSub),
 		groupRecentIDs:  make(map[string][]string),
 		msgs:           make(map[string][]ChatMessage),
-		lastDMSeen:     LoadLastDMSeen(cfgFlagPath),
-		dmSeenAtStart:  LoadLastDMSeen(cfgFlagPath),
-		seenEvents:     make(map[string]bool),
+		lastDMSeen:     lastSeen,
+		dmSeenAtStart:  lastSeen,
+		seenEvents:      make(map[string]time.Time),
+		seenEventsClean: time.Now(),
 		unread:         make(map[string]bool),
-		localDMEchoes:  make(map[string]bool),
+		localDMEchoes:  make(map[string]time.Time),
 		profiles:       profiles,
 		profilePending: make(map[string]bool),
 		lastInputHeight: inputMinHeight,
+		historyIndex:    -1,
 		viewport:       vp,
 		input:          ta,
 		mdRender:       mdRender,

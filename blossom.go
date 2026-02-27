@@ -116,7 +116,11 @@ func blossomUploadCmd(servers []string, filePath string, keys Keys) tea.Cmd {
 				}
 				defer resp.Body.Close()
 
-				body, _ := io.ReadAll(resp.Body)
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					results <- result{server: server, err: fmt.Errorf("read response: %w", err)}
+					return
+				}
 				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 					results <- result{server: server, err: fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))}
 					return

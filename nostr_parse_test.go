@@ -193,7 +193,9 @@ func TestResolveNIP05(t *testing.T) {
 		var result struct {
 			Names map[string]string `json:"names"`
 		}
-		json.NewDecoder(resp.Body).Decode(&result)
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 
 		if _, ok := result.Names["alice"]; ok {
 			t.Error("expected 'alice' to NOT be found")
@@ -281,7 +283,9 @@ func TestResolveNIP05(t *testing.T) {
 		var result struct {
 			Names map[string]string `json:"names"`
 		}
-		json.NewDecoder(resp.Body).Decode(&result)
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
 
 		if result.Names["bob"] != "pk_bob" {
 			t.Errorf("bob pubkey = %q, want %q", result.Names["bob"], "pk_bob")

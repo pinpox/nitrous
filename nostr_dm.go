@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -58,16 +59,18 @@ func subscribeDMCmd(pool *nostr.Pool, relays []string, kr nostr.Keyer, since nos
 		}
 		log.Printf("subscribeDMCmd: listening for kind 1059 gift wraps to %s since %d (adjusted from %d)", shortPK(pk.Hex()), adjustedSince, since)
 
-		// Pre-authenticate with each relay via NIP-42 in the background.
+		// Pre-authenticate with each relay via NIP-42 before subscribing.
+		var wg sync.WaitGroup
 		for _, url := range relays {
+			wg.Add(1)
 			go func(url string) {
+				defer wg.Done()
 				r, err := pool.EnsureRelay(url)
 				if err != nil {
 					log.Printf("subscribeDMCmd: failed to connect to %s: %v", url, err)
 					return
 				}
-				time.Sleep(500 * time.Millisecond)
-				authCtx, authCancel := context.WithTimeout(ctx, 3*time.Second)
+				authCtx, authCancel := context.WithTimeout(ctx, 5*time.Second)
 				err = r.Auth(authCtx, kr.SignEvent)
 				authCancel()
 				if err != nil {
@@ -77,6 +80,7 @@ func subscribeDMCmd(pool *nostr.Pool, relays []string, kr nostr.Keyer, since nos
 				}
 			}(url)
 		}
+		wg.Wait()
 
 		// Use nip17.ListenForMessages to handle subscription + gift unwrapping.
 		ch := nip17.ListenForMessages(ctx, pool, kr, relays, adjustedSince)
@@ -176,21 +180,24 @@ func buildDMRelaysEvent(relays []string, keys Keys) (nostr.Event, error) {
 	return evt, nil
 }
 
+// dmRelaysPublishedMsg is returned after publishing a kind-10050 DM relay list event.
+type dmRelaysPublishedMsg struct {
+	err error
+}
+
 // publishDMRelaysCmd publishes a kind-10050 event (NIP-17 DM relay list)
 // so other clients know where to send gift-wrapped DMs.
 func publishDMRelaysCmd(pool *nostr.Pool, relays []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildDMRelaysEvent(relays, keys)
 		if err != nil {
-			return nostrErrMsg{fmt.Errorf("publishDMRelays: %w", err)}
+			return dmRelaysPublishedMsg{err: fmt.Errorf("publishDMRelays: %w", err)}
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		go func() {
-			defer cancel()
-			drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
-			log.Printf("publishDMRelays: published kind 10050 with %d relays", len(relays))
-		}()
-		return nil
+		defer cancel()
+		drainPublish(ctx, pool.PublishMany(ctx, relays, evt))
+		log.Printf("publishDMRelays: published kind 10050 with %d relays", len(relays))
+		return dmRelaysPublishedMsg{}
 	}
 }

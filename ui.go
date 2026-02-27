@@ -21,7 +21,7 @@ var (
 )
 
 // Distinct author colors — chosen for readability on dark backgrounds.
-var authorColors = []lipgloss.Color{
+var authorColorsDark = []lipgloss.Color{
 	"#7B68EE", // medium slate blue
 	"#FF6B6B", // coral red
 	"#4ECDC4", // teal
@@ -36,16 +36,49 @@ var authorColors = []lipgloss.Color{
 	"#A3E635", // lime
 }
 
+// Distinct author colors — chosen for readability on light backgrounds.
+var authorColorsLight = []lipgloss.Color{
+	"#4B38AE", // deep slate blue
+	"#C0392B", // dark red
+	"#1A8A7D", // dark teal
+	"#B8860B", // dark goldenrod
+	"#7B2D8E", // dark violet
+	"#C0561A", // dark orange
+	"#2E7D32", // dark green
+	"#1A5DB0", // dark blue
+	"#B03060", // dark pink
+	"#007A99", // dark cyan
+	"#9B30FF", // dark fuchsia
+	"#558B2F", // dark lime
+}
+
+// authorColors is set at init time based on terminal background.
+var authorColors []lipgloss.Color
+
+// initAuthorColors selects the author color palette based on terminal background.
+// Must be called before the TUI starts (e.g., alongside detectGlamourStyle).
+func initAuthorColors() {
+	if termenv.HasDarkBackground() {
+		authorColors = authorColorsDark
+	} else {
+		authorColors = authorColorsLight
+	}
+}
+
 // colorForPubkey derives a stable color from a hex pubkey.
 func colorForPubkey(pubkey string) lipgloss.Color {
+	colors := authorColors
+	if len(colors) == 0 {
+		colors = authorColorsDark
+	}
 	if len(pubkey) < 2 {
-		return authorColors[0]
+		return colors[0]
 	}
 	b, err := hex.DecodeString(pubkey[:2])
 	if err != nil || len(b) == 0 {
-		return authorColors[0]
+		return colors[0]
 	}
-	return authorColors[int(b[0])%len(authorColors)]
+	return colors[int(b[0])%len(colors)]
 }
 
 // Layout constants
