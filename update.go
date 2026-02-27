@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"fiatjaf.com/nostr"
 )
 
 const seenEventsTTL = 30 * time.Minute
@@ -81,6 +82,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleNIP05Resolved(msg)
 	case nostrErrMsg:
 		return m.handleNostrErr(msg)
+	case dmSendErrMsg:
+		return m.handleDMSendErr(msg)
 	case blossomUploadMsg:
 		return m.handleBlossomUpload(msg)
 	case blossomUploadErrMsg:
@@ -481,6 +484,21 @@ func (m *model) handleNIP05Resolved(msg nip05ResolvedMsg) (tea.Model, tea.Cmd) {
 func (m *model) handleNostrErr(msg nostrErrMsg) (tea.Model, tea.Cmd) {
 	log.Printf("nostrErrMsg: %s", msg.Error())
 	m.addSystemMsg(msg.Error())
+	return m, nil
+}
+
+func (m *model) handleDMSendErr(msg dmSendErrMsg) (tea.Model, tea.Cmd) {
+	log.Printf("dmSendErrMsg: peer=%s err=%s", shortPK(msg.peerPK), msg.err)
+	// Show the error in the DM conversation, not whatever room is active.
+	errMsg := ChatMessage{
+		Author:    "system",
+		Content:   msg.err.Error(),
+		Timestamp: nostr.Now(),
+	}
+	m.msgs[msg.peerPK] = appendMessage(m.msgs[msg.peerPK], errMsg, m.cfg.MaxMessages)
+	if m.activeDMPeerPK() == msg.peerPK {
+		m.updateViewport()
+	}
 	return m, nil
 }
 

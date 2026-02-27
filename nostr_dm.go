@@ -17,6 +17,14 @@ import (
 // Bubbletea message types for NIP-17 DM events.
 type dmEventMsg ChatMessage
 
+// dmSendErrMsg wraps a DM send error with the peer pubkey so the error
+// message is shown in the correct DM conversation, not whatever room
+// happens to be active when the async send fails.
+type dmSendErrMsg struct {
+	peerPK string
+	err    error
+}
+
 // Subscription-ended message — triggers reconnection.
 type dmSubEndedMsg struct{}
 
@@ -136,7 +144,7 @@ func sendDM(pool *nostr.Pool, relays []string, recipientPK string, content strin
 
 		recipient, err := nostr.PubKeyFromHex(recipientPK)
 		if err != nil {
-			return nostrErrMsg{fmt.Errorf("send DM: invalid recipient pubkey: %w", err)}
+			return dmSendErrMsg{peerPK: recipientPK, err: fmt.Errorf("send DM: invalid recipient pubkey: %w", err)}
 		}
 
 		theirRelays := nip17.GetDMRelays(ctx, recipient, pool, relays)
@@ -146,7 +154,7 @@ func sendDM(pool *nostr.Pool, relays []string, recipientPK string, content strin
 
 		err = nip17.PublishMessage(ctx, content, nil, pool, relays, theirRelays, kr, recipient, nil)
 		if err != nil {
-			return nostrErrMsg{fmt.Errorf("send DM: %w", err)}
+			return dmSendErrMsg{peerPK: recipientPK, err: fmt.Errorf("send DM: %w", err)}
 		}
 
 		ts := nostr.Now()
