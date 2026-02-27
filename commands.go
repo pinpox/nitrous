@@ -211,7 +211,7 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 		}
 		name := createParts[0]
 		relayURL := m.cfg.GroupRelay
-		if len(createParts) >= 2 && strings.HasPrefix(createParts[1], "wss://") {
+		if len(createParts) >= 2 && (strings.HasPrefix(createParts[1], "wss://") || strings.HasPrefix(createParts[1], "ws://")) {
 			relayURL = createParts[1]
 		}
 		if relayURL == "" {
