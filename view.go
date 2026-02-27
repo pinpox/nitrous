@@ -112,8 +112,36 @@ func (m *model) updateViewport() {
 		msgs = m.globalMsgs
 	}
 
-	var lines []string
+	// First pass: resolve display names and find the longest one for alignment.
+	type resolvedMsg struct {
+		msg         ChatMessage
+		displayName string
+	}
+	var resolved []resolvedMsg
+	maxNameW := 0
 	for _, msg := range msgs {
+		if msg.Author == "system" {
+			resolved = append(resolved, resolvedMsg{msg: msg})
+			continue
+		}
+		displayName := msg.Author
+		if msg.PubKey != "" {
+			if msg.IsMine {
+				displayName = m.resolveAuthor(m.keys.PK.Hex())
+			} else {
+				displayName = m.resolveAuthor(msg.PubKey)
+			}
+		}
+		nameW := lipgloss.Width(displayName)
+		if nameW > maxNameW {
+			maxNameW = nameW
+		}
+		resolved = append(resolved, resolvedMsg{msg: msg, displayName: displayName})
+	}
+
+	var lines []string
+	for _, rm := range resolved {
+		msg := rm.msg
 		if msg.Author == "system" {
 			lines = append(lines, chatSystemStyle.Render("  "+msg.Content))
 			continue
@@ -126,16 +154,15 @@ func (m *model) updateViewport() {
 		} else {
 			authorStyle = chatAuthorStyle
 		}
-		displayName := msg.Author
-		if msg.PubKey != "" {
-			if msg.IsMine {
-				displayName = m.resolveAuthor(m.keys.PK.Hex())
-			} else {
-				displayName = m.resolveAuthor(msg.PubKey)
-			}
+		displayName := rm.displayName
+		// Right-align the name to the colon (weechat-style).
+		nameW := lipgloss.Width(displayName)
+		namePad := ""
+		if nameW < maxNameW {
+			namePad = strings.Repeat(" ", maxNameW-nameW)
 		}
 		ts := chatTimestampStyle.Render(msg.Timestamp.Time().Format("15:04"))
-		author := authorStyle.Render(displayName)
+		author := namePad + authorStyle.Render(displayName)
 		// Convert single newlines to paragraph breaks for glamour.
 		mdContent := strings.ReplaceAll(msg.Content, "\n", "\n\n")
 		// Replace single newlines with double, then collapse runs of 3+ into double.
