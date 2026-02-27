@@ -94,12 +94,11 @@ func TestAppendAndLoadRoundTrip(t *testing.T) {
 		if got.Author != msg.Author {
 			t.Errorf("msg[%d] author: got %q, want %q", i, got.Author, msg.Author)
 		}
-		// EventID and PubKey are truncated to 8 chars.
-		if got.EventID != msg.EventID[:8] {
-			t.Errorf("msg[%d] eventID: got %q, want %q", i, got.EventID, msg.EventID[:8])
+		if got.EventID != msg.EventID {
+			t.Errorf("msg[%d] eventID: got %q, want %q", i, got.EventID, msg.EventID)
 		}
-		if got.PubKey != msg.PubKey[:8] {
-			t.Errorf("msg[%d] pubkey: got %q, want %q", i, got.PubKey, msg.PubKey[:8])
+		if got.PubKey != msg.PubKey {
+			t.Errorf("msg[%d] pubkey: got %q, want %q", i, got.PubKey, msg.PubKey)
 		}
 	}
 }

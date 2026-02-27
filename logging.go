@@ -83,16 +83,8 @@ func appendLogEntry(logDir, roomType, roomKey string, msg ChatMessage, displayNa
 	defer f.Close()
 
 	ts := time.Unix(int64(msg.Timestamp), 0).UTC().Format("2006-01-02 15:04:05")
-	eventID := msg.EventID
-	if len(eventID) > 8 {
-		eventID = eventID[:8]
-	}
-	pubkey := msg.PubKey
-	if len(pubkey) > 8 {
-		pubkey = pubkey[:8]
-	}
 
-	line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\n", ts, eventID, pubkey, displayName, escapeContent(msg.Content))
+	line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\n", ts, msg.EventID, msg.PubKey, displayName, escapeContent(msg.Content))
 	if _, err := f.WriteString(line); err != nil {
 		log.Printf("logging: failed to write to %s: %v", path, err)
 	}
