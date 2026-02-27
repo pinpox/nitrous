@@ -224,8 +224,20 @@ func (m *model) handleDMEvent(msg dmEventMsg) (tea.Model, tea.Cmd) {
 
 	peer := cm.PubKey
 	m.msgs[peer] = appendMessage(m.msgs[peer], cm, m.cfg.MaxMessages)
+
 	newPeer := false
 	if !m.containsDMPeer(peer) {
+		// Only auto-add unknown peers for genuinely new DMs, not replayed
+		// history. Replayed messages from peers the user previously left
+		// (removed from NIP-51 contacts) are stored but the peer is not
+		// re-added to the sidebar.
+		if cm.Timestamp <= m.dmSeenAtStart {
+			log.Printf("dmEventMsg: skipping sidebar add for replayed msg from %s", shortPK(peer))
+			if m.dmEvents != nil {
+				return m, waitForDMEvent(m.dmEvents, m.keys)
+			}
+			return m, nil
+		}
 		newPeer = true
 		m.appendDMItem(peer, m.resolveAuthor(peer))
 	}

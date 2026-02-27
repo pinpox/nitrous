@@ -16,7 +16,7 @@
           pname = "nitrous";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-jPdYG0YO21TpYzfqxU4gjW99B9FGdtlWCD9sNydabxU=";
+          vendorHash = "sha256-OyrPN8/2kry8jB3761VH61dMVWUvNoxQ5JQbnmH5x9A=";
         };
 
         devShells.default = pkgs.mkShell {
