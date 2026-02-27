@@ -27,5 +27,11 @@
           ];
         };
       }
-    );
+    ) // {
+      # NixOS integration test (Linux only).
+      checks.x86_64-linux.integration = import ./test-integration.nix {
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+        inherit self;
+      };
+    };
 }

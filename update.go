@@ -166,7 +166,7 @@ func (m *model) handleDMSubStarted(msg dmSubStartedMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleChannelEvent(msg channelEventMsg) (tea.Model, tea.Cmd) {
 	cm := ChatMessage(msg)
-	log.Printf("channelEventMsg: author=%s channel=%s id=%s", cm.Author, cm.ChannelID, cm.EventID)
+	log.Printf("channelEventMsg: author=%s channel=%s id=%s content=%q", cm.Author, cm.ChannelID, cm.EventID, cm.Content)
 	sub := m.roomSubs[cm.ChannelID]
 	if m.isSeenEvent(cm.EventID) {
 		return m, waitForRoomSub(sub, m.keys)
@@ -189,7 +189,7 @@ func (m *model) handleChannelEvent(msg channelEventMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleDMEvent(msg dmEventMsg) (tea.Model, tea.Cmd) {
 	cm := ChatMessage(msg)
-	log.Printf("dmEventMsg: author=%s id=%s mine=%v", cm.Author, cm.EventID, cm.IsMine)
+	log.Printf("dmEventMsg: author=%s id=%s mine=%v content=%q", cm.Author, cm.EventID, cm.IsMine, cm.Content)
 	if m.isSeenEvent(cm.EventID) {
 		if m.dmEvents != nil {
 			return m, waitForDMEvent(m.dmEvents, m.keys)

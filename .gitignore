@@ -8,3 +8,5 @@ groups
 config.toml
 nsec
 vendor/
+.pi/
+openspec/
