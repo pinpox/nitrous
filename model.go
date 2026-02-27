@@ -33,7 +33,7 @@ type model struct {
 	pool        *nostr.Pool
 	kr          nostr.Keyer
 	relays      []string
-	savedRooms  []Room // from rooms file
+
 
 	// TUI dimensions
 	width  int
@@ -207,7 +207,7 @@ func (m *model) activeSidebarItem() SidebarItem {
 
 
 
-func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr nostr.Keyer, rooms []Room, savedGroups []SavedGroup, contacts []Contact, mdRender *glamour.TermRenderer, mdStyle string) model {
+func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr nostr.Keyer, mdRender *glamour.TermRenderer, mdStyle string) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message... (/help for commands)"
 	ta.Prompt = "> "
@@ -232,26 +232,7 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr no
 
 	profiles := map[string]string{keys.PK.Hex(): ownName}
 
-	// Seed profiles from contacts.
-	for _, c := range contacts {
-		profiles[c.PubKey] = c.Name
-	}
-
-	// Build initial sidebar: channels, then groups, then DMs.
-	var sidebar []SidebarItem
-	for _, r := range rooms {
-		sidebar = append(sidebar, ChannelItem{Channel: Channel{ID: r.ID, Name: r.Name}})
-	}
-	for _, sg := range savedGroups {
-		sidebar = append(sidebar, GroupItem{Group: Group{RelayURL: sg.RelayURL, GroupID: sg.GroupID, Name: sg.Name}})
-	}
-	for _, c := range contacts {
-		name := profiles[c.PubKey]
-		if name == "" {
-			name = shortPK(c.PubKey)
-		}
-		sidebar = append(sidebar, DMItem{PubKey: c.PubKey, Name: name})
-	}
+	// Sidebar starts empty — populated by NIP-51 fetch from relays.
 
 	lastSeen := LoadLastDMSeen(cfgFlagPath)
 
@@ -262,11 +243,9 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr no
 		pool:        pool,
 		kr:          kr,
 		relays:      cfg.Relays,
-		savedRooms:  rooms,
 		width:       80,
 		height:      24,
 		activeItem:  0,
-		sidebar:     sidebar,
 		roomSubs:        make(map[string]*roomSub),
 		groupRecentIDs:  make(map[string][]string),
 		msgs:           make(map[string][]ChatMessage),
@@ -295,15 +274,7 @@ func (m *model) Init() tea.Cmd {
 	for _, r := range m.relays {
 		m.addSystemMsg(fmt.Sprintf("connecting to %s ...", r))
 	}
-	channels := m.allChannels()
-	groups := m.allGroups()
-	if len(channels) > 0 {
-		m.addSystemMsg(fmt.Sprintf("joining #%s ...", channels[0].Name))
-	} else if len(groups) > 0 {
-		m.addSystemMsg(fmt.Sprintf("joining ~%s ...", groups[0].Name))
-	} else {
-		m.addSystemMsg("no rooms configured — use /channel create #name or /join <event-id>")
-	}
+	m.addSystemMsg("fetching lists from relays ...")
 
 	cmds := []tea.Cmd{
 		textarea.Blink,
@@ -311,20 +282,8 @@ func (m *model) Init() tea.Cmd {
 		publishDMRelaysCmd(m.pool, m.relays, m.keys),
 		fetchNIP51ListsCmd(m.pool, m.relays, m.keys, m.kr),
 	}
-	// Subscribe to ALL channels and groups at startup.
-	for _, ch := range channels {
-		cmds = append(cmds, subscribeChannelCmd(m.pool, m.relays, ch.ID))
-	}
-	for _, g := range groups {
-		cmds = append(cmds, subscribeGroupCmd(m.pool, g.RelayURL, g.GroupID))
-	}
 	if m.cfg.Profile.Name != "" || m.cfg.Profile.DisplayName != "" || m.cfg.Profile.About != "" || m.cfg.Profile.Picture != "" {
 		cmds = append(cmds, publishProfileCmd(m.pool, m.relays, m.cfg.Profile, m.keys))
-	}
-	// Fetch profiles for all known DM peers so display names are up to date.
-	for _, peer := range m.allDMPeers() {
-		cmds = append(cmds, fetchProfileCmd(m.pool, m.relays, peer))
-		m.profilePending[peer] = true
 	}
 	return tea.Batch(cmds...)
 }

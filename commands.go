@@ -279,9 +279,6 @@ func (m *model) handleGroupCommand(arg string) (tea.Model, tea.Cmd) {
 		g := gi.Group
 		gk := groupKey(g.RelayURL, g.GroupID)
 		m.updateGroupName(g.RelayURL, g.GroupID, subArg)
-		if err := UpdateSavedGroupName(m.cfgFlagPath, g.RelayURL, g.GroupID, subArg); err != nil {
-			log.Printf("/group name: failed to save: %v", err)
-		}
 		m.updateViewport()
 		return m, tea.Batch(
 			editGroupMetadataCmd(m.pool, g.RelayURL, g.GroupID, map[string]string{"name": subArg}, m.groupRecentIDs[gk], m.keys),
@@ -468,9 +465,6 @@ func (m *model) openDM(input string) (tea.Model, tea.Cmd) {
 	if !m.containsDMPeer(pk) {
 		newPeer = true
 		m.appendDMItem(pk, m.resolveAuthor(pk))
-		if err := AppendContact(m.cfgFlagPath, Contact{Name: m.resolveAuthor(pk), PubKey: pk}); err != nil {
-			log.Printf("openDM: failed to save contact: %v", err)
-		}
 	}
 
 	if idx := m.findDMPeerIdx(pk); idx >= 0 {
@@ -511,11 +505,6 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 		m.removeSidebarItem(m.activeItem)
 		delete(m.msgs, ch.ID)
 
-		// Remove from rooms file.
-		if err := RemoveRoom(m.cfgFlagPath, ch.ID); err != nil {
-			log.Printf("leaveCurrentItem: failed to remove room: %v", err)
-		}
-
 		leaveCmds = append(leaveCmds, publishPublicChatsListCmd(m.pool, m.relays, m.allChannels(), m.keys))
 		log.Printf("leaveCurrentItem: left channel #%s", ch.Name)
 
@@ -529,11 +518,6 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 		// Remove from sidebar and message history.
 		m.removeSidebarItem(m.activeItem)
 		delete(m.msgs, gk)
-
-		// Remove from groups file.
-		if err := RemoveSavedGroup(m.cfgFlagPath, g.RelayURL, g.GroupID); err != nil {
-			log.Printf("leaveCurrentItem: failed to remove group: %v", err)
-		}
 
 		// Send leave request.
 		leaveCmds = append(leaveCmds, leaveGroupCmd(m.pool, g.RelayURL, g.GroupID, m.groupRecentIDs[gk], m.keys))
@@ -550,11 +534,6 @@ func (m *model) leaveCurrentItem() (tea.Model, tea.Cmd) {
 		// Remove from sidebar and message history.
 		m.removeSidebarItem(m.activeItem)
 		delete(m.msgs, peer)
-
-		// Remove from contacts file.
-		if err := RemoveContact(m.cfgFlagPath, peer); err != nil {
-			log.Printf("leaveCurrentItem: failed to remove contact: %v", err)
-		}
 
 		leaveCmds = append(leaveCmds, publishContactsListCmd(m.pool, m.relays, contactsFromModel(m.allDMPeers(), m.profiles), m.keys, m.kr))
 		log.Printf("leaveCurrentItem: left DM with %s", m.resolveAuthor(peer))

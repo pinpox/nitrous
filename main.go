@@ -70,27 +70,6 @@ func main() {
 	}
 	log.Printf("keys loaded: npub=%s", keys.NPub)
 
-	rooms, err := LoadRooms(*configFlag)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "rooms error: %v\n", err)
-		os.Exit(1)
-	}
-	log.Printf("rooms loaded: %d rooms", len(rooms))
-
-	groups, err := LoadSavedGroups(*configFlag)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "groups error: %v\n", err)
-		os.Exit(1)
-	}
-	log.Printf("groups loaded: %d groups", len(groups))
-
-	contacts, err := LoadContacts(*configFlag)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "contacts error: %v\n", err)
-		os.Exit(1)
-	}
-	log.Printf("contacts loaded: %d contacts", len(contacts))
-
 	// Create the markdown renderer before the TUI starts so the terminal
 	// background-color query (OSC 11) completes while stdio is still normal.
 	// Detect style once, store it for re-creation on resize.
@@ -107,7 +86,7 @@ func main() {
 		},
 	})
 
-	m := newModel(cfg, *configFlag, keys, pool, &kr, rooms, groups, contacts, mdRender, mdStyle)
+	m := newModel(cfg, *configFlag, keys, pool, &kr, mdRender, mdStyle)
 
 	log.Println("starting TUI")
 	p := tea.NewProgram(&m, tea.WithAltScreen(), tea.WithMouseCellMotion())
