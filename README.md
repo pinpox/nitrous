@@ -41,18 +41,25 @@ See ./config.example.toml for example documentation.
 | `Ctrl+C`    | Quit                      |
 
 
-| Command              | Description                                  |
-|----------------------|----------------------------------------------|
-| `/create #name`      | Create a new channel                         |
-| `/join #name`        | Join a channel from your rooms file          |
-| `/join <event-id>`   | Join a channel by event ID                   |
-| `/join naddr1...`    | Join a NIP-29 relay-based group              |
-| `/join host'groupid` | Join a NIP-29 group by address               |
-| `/dm <npub\|user@domain>` | Open a DM conversation (supports NIP-05) |
-| `/leave`             | Leave the current channel, group, or DM      |
-| `/me`                | Show QR code of your npub                    |
-| `/room`              | Show QR code of the current channel or group |
-| `/help`              | Show command help                            |
+| Command                        | Description                                  |
+|--------------------------------|----------------------------------------------|
+| `/channel create #name`        | Create a new NIP-28 channel                  |
+| `/join #name`                  | Join a channel from your rooms file          |
+| `/join <event-id>`             | Join a channel by event ID                   |
+| `/join naddr1...`              | Join a NIP-29 relay-based group              |
+| `/join host'groupid`           | Join a NIP-29 group by address               |
+| `/group create <name> [relay]` | Create a NIP-29 group                        |
+| `/group name <new-name>`       | Rename the current group                     |
+| `/group about <text>`          | Set group description                        |
+| `/group picture <url>`         | Set group picture                            |
+| `/group set open\|closed`      | Set group open/closed                        |
+| `/group user add <pubkey>`     | Add a user to the current group              |
+| `/dm <npub\|hex\|user@domain>` | Open a DM conversation (supports NIP-05)     |
+| `/delete`                      | Delete your last message in a group          |
+| `/leave`                       | Leave the current channel, group, or DM      |
+| `/me`                          | Show QR code of your npub                    |
+| `/room`                        | Show QR code of the current channel or group |
+| `/help`                        | Show command help                            |
 
 ## Supported NIPs
 
@@ -67,4 +74,23 @@ See ./config.example.toml for example documentation.
 | NIP-44 | Versioned encryption |
 | NIP-59 | Gift Wrap |
 | NIP-05 | DNS-based internet identifiers (user lookup) |
+| NIP-51 | Lists (contacts, public chats, simple groups) |
 | NIP-65 | Relay List Metadata |
+
+## Testing
+
+```sh
+# Unit tests only (fast)
+go test -short ./...
+
+# All tests including integration (~55s)
+go test -timeout 180s ./...
+
+# Integration test with verbose output
+go test -v -run TestIntegration -timeout 180s
+```
+
+The integration test starts an embedded khatru29 NIP-29 relay in-process
+(no external services needed) and uses
+[teatest](https://github.com/charmbracelet/x/exp/teatest) to drive two
+TUI clients (alice & bob) through channels, groups, DMs, and commands.
