@@ -186,25 +186,38 @@ func (m *model) updateViewport() {
 			rawLines = rawLines[:len(rawLines)-1]
 		}
 		// Word-wrap at word boundaries, then hard-wrap any remaining
-		// overflows (long unbroken words like URLs).
-		var contentLines []string
+		// overflows (long unbroken words like URLs) at the full viewport
+		// width so continuation lines aren't indented under the author prefix.
+		fullWidth := m.viewport.Width
+		type cLine struct {
+			text    string
+			hardWrap bool // true = from hard-wrapping a long token (no prefix pad)
+		}
+		var contentLines []cLine
 		for _, cl := range rawLines {
 			wrapped := wordwrap.String(cl, wrapWidth)
 			for _, wl := range strings.Split(wrapped, "\n") {
 				if lipgloss.Width(wl) > wrapWidth {
-					contentLines = append(contentLines, strings.Split(wrap.String(wl, wrapWidth), "\n")...)
+					hardWrapped := strings.Split(wrap.String(wl, fullWidth), "\n")
+					for i, hw := range hardWrapped {
+						contentLines = append(contentLines, cLine{text: hw, hardWrap: i > 0})
+					}
 				} else {
-					contentLines = append(contentLines, wl)
+					contentLines = append(contentLines, cLine{text: wl})
 				}
 			}
 		}
 		if len(contentLines) == 0 {
-			contentLines = []string{""}
+			contentLines = []cLine{{text: ""}}
 		}
-		first := prefix + contentLines[0]
+		first := prefix + contentLines[0].text
 		lines = append(lines, first)
 		for _, cl := range contentLines[1:] {
-			lines = append(lines, pad+cl)
+			if cl.hardWrap {
+				lines = append(lines, cl.text)
+			} else {
+				lines = append(lines, pad+cl.text)
+			}
 		}
 	}
 
