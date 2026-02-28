@@ -17,7 +17,6 @@ var (
 	colorStatusBg  = lipgloss.Color("#24283B")
 	colorWhite     = lipgloss.Color("#C0CAF5")
 	colorGreen     = lipgloss.Color("#9ECE6A")
-	colorRed       = lipgloss.Color("#F7768E")
 )
 
 // Distinct author colors — chosen for readability on dark backgrounds.

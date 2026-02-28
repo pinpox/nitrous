@@ -146,9 +146,9 @@ func TestLoadLargeFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 100000; i++ {
-		f.WriteString("2024-01-15 10:30:45\tabcdef00\t12345678\tuser\tmessage number " + filepath.Base(dir) + "\n")
+		_, _ = f.WriteString("2024-01-15 10:30:45\tabcdef00\t12345678\tuser\tmessage number " + filepath.Base(dir) + "\n")
 	}
-	f.Close()
+	_ = f.Close()
 
 	// Loading last 500 should be fast and correct.
 	loaded, err := loadLogHistory(dir, "channel", "bigroom", 500)

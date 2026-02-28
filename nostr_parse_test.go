@@ -129,7 +129,7 @@ func TestResolveNIP05(t *testing.T) {
 				},
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}))
 		defer srv.Close()
 
@@ -148,7 +148,7 @@ func TestResolveNIP05(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != 200 {
 			t.Fatalf("expected 200, got %d", resp.StatusCode)
@@ -178,7 +178,7 @@ func TestResolveNIP05(t *testing.T) {
 				},
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}))
 		defer srv.Close()
 
@@ -188,7 +188,7 @@ func TestResolveNIP05(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		var result struct {
 			Names map[string]string `json:"names"`
@@ -214,7 +214,7 @@ func TestResolveNIP05(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode == 200 {
 			t.Error("expected non-200 status code")
@@ -224,7 +224,7 @@ func TestResolveNIP05(t *testing.T) {
 	t.Run("invalid JSON response", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte("not valid json"))
+			_, _ = w.Write([]byte("not valid json"))
 		}))
 		defer srv.Close()
 
@@ -234,7 +234,7 @@ func TestResolveNIP05(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		var result struct {
 			Names map[string]string `json:"names"`
@@ -268,7 +268,7 @@ func TestResolveNIP05(t *testing.T) {
 				},
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp)
+			_ = json.NewEncoder(w).Encode(resp)
 		}))
 		defer srv.Close()
 
@@ -278,7 +278,7 @@ func TestResolveNIP05(t *testing.T) {
 		if err != nil {
 			t.Fatalf("HTTP GET: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		var result struct {
 			Names map[string]string `json:"names"`

@@ -78,14 +78,16 @@ func (m *model) updateSuggestions() {
 		case len(tokens) == 2 && trailingSpace:
 			// "/group set " → show options for the subcommand
 			sub := strings.ToLower(tokens[1])
-			if sub == "set" {
+			switch sub {
+			case "set":
 				suggestions = []string{"open", "closed"}
-			} else if sub == "user" {
+			case "user":
 				suggestions = []string{"add"}
 			}
 		case len(tokens) == 3 && !trailingSpace:
 			sub := strings.ToLower(tokens[1])
-			if sub == "set" {
+			switch sub {
+			case "set":
 				options := []string{"open", "closed"}
 				prefix := strings.ToLower(tokens[2])
 				for _, o := range options {
@@ -93,7 +95,7 @@ func (m *model) updateSuggestions() {
 						suggestions = append(suggestions, o)
 					}
 				}
-			} else if sub == "user" {
+			case "user":
 				options := []string{"add"}
 				prefix := strings.ToLower(tokens[2])
 				for _, o := range options {

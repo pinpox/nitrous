@@ -80,7 +80,7 @@ func appendLogEntry(logDir, roomType, roomKey string, msg ChatMessage, displayNa
 		log.Printf("logging: failed to open %s: %v", path, err)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	ts := time.Unix(int64(msg.Timestamp), 0).UTC().Format("2006-01-02 15:04:05")
 
@@ -105,7 +105,7 @@ func loadLogHistory(logDir, roomType, roomKey string, maxMessages int) ([]ChatMe
 		}
 		return nil, fmt.Errorf("logging: open %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	lines, err := readLastNLines(f, maxMessages)
 	if err != nil {
@@ -200,24 +200,4 @@ func parseLogLine(line string) (ChatMessage, error) {
 	}, nil
 }
 
-// logRoomType returns the log room type string for a ChatMessage based on context.
-func logRoomType(cm ChatMessage) string {
-	if cm.GroupKey != "" {
-		return "group"
-	}
-	if cm.ChannelID != "" {
-		return "channel"
-	}
-	return "dm"
-}
 
-// logRoomKey returns the log room key for a ChatMessage.
-func logRoomKey(cm ChatMessage) string {
-	if cm.GroupKey != "" {
-		return cm.GroupKey
-	}
-	if cm.ChannelID != "" {
-		return cm.ChannelID
-	}
-	return cm.PubKey
-}

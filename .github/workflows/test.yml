@@ -28,3 +28,6 @@ jobs:
 
       - name: Test (race detector, unit tests only)
         run: go test -race -short -count=1 -timeout 300s ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6

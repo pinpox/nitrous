@@ -31,7 +31,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "could not open debug log: %v\n", err)
 			os.Exit(1)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		log.Println("debug logging enabled")
 		// Route the library's internal loggers to our debug log too.
 		nostr.InfoLogger.SetOutput(f)

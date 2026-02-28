@@ -160,7 +160,7 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleChannelCreated(msg channelCreatedMsg) (tea.Model, tea.Cmd) {
 	log.Printf("channelCreatedMsg: id=%s name=%q", msg.ID, msg.Name)
-	idx := m.appendChannelItem(Channel{ID: msg.ID, Name: msg.Name})
+	idx := m.appendChannelItem(Channel(msg))
 	m.activeItem = idx
 	m.updateViewport()
 	return m, tea.Batch(

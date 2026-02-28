@@ -492,6 +492,7 @@ func buildCreateGroupInviteEvent(groupID string, previousIDs []string, keys Keys
 }
 
 // createGroupInviteCmd publishes a kind 9009 event to create an invite for a NIP-29 group.
+//nolint:unused // will be wired to /group invite command
 func createGroupInviteCmd(pool *nostr.Pool, relayURL, groupID string, previousIDs []string, keys Keys) tea.Cmd {
 	return func() tea.Msg {
 		evt, err := buildCreateGroupInviteEvent(groupID, previousIDs, keys)

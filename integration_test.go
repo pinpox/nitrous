@@ -51,9 +51,13 @@ func startTestRelay(t *testing.T) (relayURL string, cleanup func()) {
 
 	// Separate stores: one for NIP-29 events (managed by relay29), one for everything else.
 	nip29DB := &slicestore.SliceStore{}
-	nip29DB.Init()
+	if err := nip29DB.Init(); err != nil {
+		t.Fatalf("nip29DB.Init: %v", err)
+	}
 	generalDB := &slicestore.SliceStore{}
-	generalDB.Init()
+	if err := generalDB.Init(); err != nil {
+		t.Fatalf("generalDB.Init: %v", err)
+	}
 
 	relayPrivkey := gonostr.GeneratePrivateKey()
 
@@ -176,13 +180,13 @@ func startTestRelay(t *testing.T) (relayURL string, cleanup func()) {
 	})
 
 	server := &http.Server{Handler: relay}
-	go server.Serve(ln)
+	go func() { _ = server.Serve(ln) }()
 
 	url := fmt.Sprintf("ws://127.0.0.1:%d", port)
 	t.Logf("test relay running at %s (domain=%s)", url, domain)
 
 	return url, func() {
-		server.Shutdown(context.Background())
+		_ = server.Shutdown(context.Background())
 	}
 }
 
@@ -260,10 +264,6 @@ func typeCmd(tm *teatest.TestModel, text string) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
 }
 
-func sendCtrlDown(tm *teatest.TestModel) {
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlDown})
-}
-
 func sendCtrlUp(tm *teatest.TestModel) {
 	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlUp})
 }
@@ -278,7 +278,7 @@ func queryRelayEvents(t *testing.T, relayURL string, kinds []int, authors []stri
 	if err != nil {
 		t.Fatalf("queryRelayEvents: connect: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	filter := gonostr.Filter{
 		Kinds: kinds,
@@ -327,10 +327,10 @@ func TestIntegration(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	alice := newTestClient(t, "alice", relayURL)
-	defer alice.tm.Quit()
+	defer func() { _ = alice.tm.Quit() }()
 
 	bob := newTestClient(t, "bob", relayURL)
-	defer bob.tm.Quit()
+	defer func() { _ = bob.tm.Quit() }()
 
 	t.Logf("alice: npub=%s hex=%s", alice.npub, alice.hexPK)
 	t.Logf("bob:   npub=%s hex=%s", bob.npub, bob.hexPK)
