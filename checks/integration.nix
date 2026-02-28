@@ -16,7 +16,7 @@
 #
 # Run with: nix build .#checks.x86_64-linux.integration
 
-{ pkgs, self }:
+{ testers, tmux, writeText, writeShellScript, nitrous }:
 
 let
   # Pre-generated test keys (never use these for real!)
@@ -26,10 +26,8 @@ let
   bobNsec = "nsec1q5pyr8xdmzxjaxs3g7407fezxx9828emyvfkfztuh53stwgndyasrf67ps";
   bobNpub = "npub1cc2ln5qtfn6mgz4ywchurvkr29x8xnqv6aeruyayu4200py08ayqt2d8xk";
 
-  nitrous = self.packages.${pkgs.system}.default;
-
   # Helper to generate a config file for a client.
-  mkConfig = { name, relayUrl }: pkgs.writeText "config.toml" ''
+  mkConfig = { name, relayUrl }: writeText "config.toml" ''
     relays = ["${relayUrl}"]
     max_messages = 500
     private_key_file = "/home/${name}/.config/nitrous/nsec"
@@ -39,10 +37,10 @@ let
     display_name = "${name}"
   '';
 
-  mkNsecFile = nsec: pkgs.writeText "nsec" nsec;
+  mkNsecFile = nsec: writeText "nsec" nsec;
 
   # Helper script to set up nitrous config directory and start it in tmux.
-  mkSetupScript = { name, nsec, relayUrl }: pkgs.writeShellScript "setup-${name}" ''
+  mkSetupScript = { name, nsec, relayUrl }: writeShellScript "setup-${name}" ''
     set -euo pipefail
 
     mkdir -p /home/${name}/.config/nitrous
@@ -57,24 +55,24 @@ let
 
     # Start nitrous in a tmux session with debug logging.
     # Run from the user's home dir so debug.log lands there.
-    su - ${name} -c 'cd /home/${name} && ${pkgs.tmux}/bin/tmux new-session -d -s nitrous "cd /home/${name} && ${nitrous}/bin/nitrous --config /home/${name}/.config/nitrous/config.toml --debug 2>&1"'
+    su - ${name} -c 'cd /home/${name} && ${tmux}/bin/tmux new-session -d -s nitrous "cd /home/${name} && ${nitrous}/bin/nitrous --config /home/${name}/.config/nitrous/config.toml --debug 2>&1"'
   '';
 
   # Helper script to send text to nitrous via tmux.
-  mkSendScript = name: pkgs.writeShellScript "send-${name}" ''
-    su - ${name} -c "${pkgs.tmux}/bin/tmux send-keys -t nitrous -- \"$1\" Enter"
+  mkSendScript = name: writeShellScript "send-${name}" ''
+    su - ${name} -c "${tmux}/bin/tmux send-keys -t nitrous -- \"$1\" Enter"
   '';
 
   # Helper to capture tmux pane content.
-  mkCaptureScript = name: pkgs.writeShellScript "capture-${name}" ''
-    su - ${name} -c "${pkgs.tmux}/bin/tmux capture-pane -t nitrous -p"
+  mkCaptureScript = name: writeShellScript "capture-${name}" ''
+    su - ${name} -c "${tmux}/bin/tmux capture-pane -t nitrous -p"
   '';
 
-in pkgs.testers.nixosTest {
+in testers.runNixOSTest {
   name = "nitrous-integration";
 
   nodes = {
-    relay = { config, pkgs, ... }: {
+    relay = { ... }: {
       services.strfry = {
         enable = true;
         settings = {
@@ -92,7 +90,7 @@ in pkgs.testers.nixosTest {
       networking.firewall.allowedTCPPorts = [ 7777 ];
     };
 
-    client1 = { config, pkgs, ... }: {
+    client1 = { pkgs, ... }: {
       environment.systemPackages = [ nitrous pkgs.tmux ];
       users.users.alice = {
         isNormalUser = true;
@@ -100,7 +98,7 @@ in pkgs.testers.nixosTest {
       };
     };
 
-    client2 = { config, pkgs, ... }: {
+    client2 = { pkgs, ... }: {
       environment.systemPackages = [ nitrous pkgs.tmux ];
       users.users.bob = {
         isNormalUser = true;
