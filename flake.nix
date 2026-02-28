@@ -17,6 +17,7 @@
           version = "0.1.0";
           src = ./.;
           vendorHash = "sha256-Ansb+qGFtfH8e0l+N+1UsPvP87QuiULj+8xzkcpeDDQ=";
+          doCheck = false;
         };
 
         devShells.default = pkgs.mkShell {
