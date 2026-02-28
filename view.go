@@ -163,12 +163,9 @@ func (m *model) updateViewport() {
 		}
 		ts := chatTimestampStyle.Render(msg.Timestamp.Time().Format("15:04"))
 		author := namePad + authorStyle.Render(displayName)
-		// Convert single newlines to paragraph breaks for glamour.
-		mdContent := strings.ReplaceAll(msg.Content, "\n", "\n\n")
-		// Replace single newlines with double, then collapse runs of 3+ into double.
-		for strings.Contains(mdContent, "\n\n\n") {
-			mdContent = strings.ReplaceAll(mdContent, "\n\n\n", "\n\n")
-		}
+		// Convert single newlines to paragraph breaks for glamour,
+		// but leave newlines inside fenced code blocks untouched.
+		mdContent := doubleNewlinesOutsideCode(msg.Content)
 		content := renderMarkdown(m.mdRender, mdContent)
 		prefix := fmt.Sprintf("%s %s: ", ts, author)
 		prefixW := lipgloss.Width(prefix)
@@ -334,4 +331,31 @@ func (m *model) viewStatusBar() string {
 	total := len(m.relays)
 	bar := statusConnectedStyle.Render(fmt.Sprintf("● %d/%d relays", connected, total))
 	return statusBarStyle.Width(m.width).Render(bar)
+}
+
+// doubleNewlinesOutsideCode doubles single newlines for markdown paragraph
+// breaks, but preserves newlines inside fenced code blocks (``` ... ```).
+func doubleNewlinesOutsideCode(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) * 2)
+	lines := strings.Split(s, "\n")
+	inCode := false
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inCode = !inCode
+		}
+		b.WriteString(line)
+		if i < len(lines)-1 {
+			b.WriteByte('\n')
+			if !inCode {
+				b.WriteByte('\n')
+			}
+		}
+	}
+	// Collapse runs of 3+ newlines into double.
+	result := b.String()
+	for strings.Contains(result, "\n\n\n") {
+		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
+	}
+	return result
 }
