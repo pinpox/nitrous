@@ -346,16 +346,28 @@ func (m *model) inviteToGroup(input string) (tea.Model, tea.Cmd) {
 		pk = input
 	} else {
 		// Look up by display name in profiles (case-insensitive).
+		var matches []string
 		for pubkey, name := range m.profiles {
 			if strings.EqualFold(name, input) {
-				pk = pubkey
-				break
+				matches = append(matches, pubkey)
 			}
 		}
-		if pk == "" {
+		switch len(matches) {
+		case 0:
 			m.addSystemMsg(fmt.Sprintf("unknown contact: %s (use npub or hex pubkey)", input))
 			return m, nil
+		case 1:
+			pk = matches[0]
+		default:
+			m.addSystemMsg(fmt.Sprintf("ambiguous name %q matches %d contacts — use npub or hex pubkey instead", input, len(matches)))
+			return m, nil
 		}
+	}
+
+	naddr, err := m.groupNaddr(g)
+	if err != nil {
+		m.addSystemMsg(fmt.Sprintf("invite: failed to encode naddr: %v", err))
+		return m, nil
 	}
 
 	displayName := m.resolveAuthor(pk)
@@ -363,7 +375,7 @@ func (m *model) inviteToGroup(input string) (tea.Model, tea.Cmd) {
 
 	return m, tea.Batch(
 		putUserCmd(m.pool, g.RelayURL, g.GroupID, pk, m.groupRecentIDs[gk], m.keys),
-		inviteDMCmd(m.pool, m.relays, g.RelayURL, g.GroupID, g.Name, pk, m.keys, m.kr),
+		inviteDMCmd(m.pool, m.relays, g.Name, naddr, pk, m.keys, m.kr),
 	)
 }
 

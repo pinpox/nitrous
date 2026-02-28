@@ -355,12 +355,17 @@ func (m *model) extractInviteAddresses() []string {
 			}
 			word := fields[0]
 			// Match host'groupid pattern (e.g. groups.0xchat.com'2d0fe936).
-			// Only match if it's the first word on a line and the host part looks like a domain.
 			if parts := strings.SplitN(word, "'", 2); len(parts) == 2 && strings.Contains(parts[0], ".") && parts[1] != "" {
 				if !seen[word] {
 					seen[word] = true
 					addrs = append(addrs, word)
 				}
+			}
+			// Match nostr:naddr1... or bare naddr1... links.
+			candidate := strings.TrimPrefix(word, "nostr:")
+			if strings.HasPrefix(candidate, "naddr1") && !seen[candidate] {
+				seen[candidate] = true
+				addrs = append(addrs, candidate)
 			}
 		}
 	}

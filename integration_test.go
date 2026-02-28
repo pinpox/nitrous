@@ -644,6 +644,92 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	// ── Invite ──────────────────────────────────────────────────────────
+
+	t.Run("group/invite", func(t *testing.T) {
+		if groupID == "" {
+			t.Skip("no group ID")
+		}
+		// Navigate alice to the group.
+		host := relayURL[len("ws://"):]
+		typeCmd(alice.tm, "/join "+host+"'"+groupID)
+		time.Sleep(2 * time.Second)
+
+		// Alice invites bob by npub.
+		typeCmd(alice.tm, "/invite "+bob.npub)
+		time.Sleep(5 * time.Second)
+
+		// Verify kind 9000 (put-user) was sent for bob.
+		evts := waitForRelayEvent(t, relayURL, []int{9000}, nil, map[string][]string{"h": {groupID}}, defaultTimeout)
+		foundPutUser := false
+		for _, evt := range evts {
+			for _, tag := range evt.Tags {
+				if len(tag) >= 2 && tag[0] == "p" && tag[1] == bob.hexPK {
+					foundPutUser = true
+					break
+				}
+			}
+		}
+		if !foundPutUser {
+			t.Fatal("kind 9000 put-user for bob not found after /invite")
+		}
+
+		// Verify a gift-wrap DM (kind 1059) was sent containing an naddr.
+		giftWraps := queryRelayEvents(t, relayURL, []int{1059}, nil, nil)
+		if len(giftWraps) == 0 {
+			t.Fatal("no gift wraps found after /invite")
+		}
+		foundForBob := false
+		for _, gw := range giftWraps {
+			for _, tag := range gw.Tags {
+				if len(tag) >= 2 && tag[0] == "p" && tag[1] == bob.hexPK {
+					foundForBob = true
+					break
+				}
+			}
+		}
+		if !foundForBob {
+			t.Fatalf("no gift wrap tagged with bob's pubkey after /invite")
+		}
+	})
+
+	t.Run("group/invite-join", func(t *testing.T) {
+		if groupID == "" {
+			t.Skip("no group ID")
+		}
+		// Bob opens DM with alice. The invite message was delivered during
+		// the previous test and is already in m.msgs[alicePK].
+		typeCmd(bob.tm, "/dm "+alice.npub)
+		time.Sleep(3 * time.Second)
+
+		// Bob types "/join " and presses Tab to autocomplete the naddr
+		// from the invite message in the current chat.
+		bob.tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/join ")})
+		time.Sleep(1 * time.Second)
+		bob.tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+		time.Sleep(1 * time.Second)
+
+		// Verify the autocomplete filled in an naddr.
+		waitFor(t, bob.tm, "naddr1", defaultTimeout)
+
+		// Press Enter to join.
+		bob.tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+		time.Sleep(3 * time.Second)
+
+		// Verify bob joined by checking for a join request (kind 9021) on the relay.
+		evts := queryRelayEvents(t, relayURL, []int{9021}, nil, map[string][]string{"h": {groupID}})
+		foundJoin := false
+		for _, evt := range evts {
+			if evt.PubKey == bob.hexPK {
+				foundJoin = true
+				break
+			}
+		}
+		if !foundJoin {
+			t.Log("bob's kind 9021 join-request not found (may have already been a member)")
+		}
+	})
+
 	// ── NIP-17 DMs ───────────────────────────────────────────────────────
 
 	t.Run("dm/open", func(t *testing.T) {

@@ -520,12 +520,12 @@ func createGroupInviteCmd(pool *nostr.Pool, relayURL, groupID string, previousID
 	}
 }
 
-// inviteDMCmd sends a DM with a group invite in host'groupid format.
-func inviteDMCmd(pool *nostr.Pool, relays []string, relayURL, groupID, groupName, recipientPK string, keys Keys, kr nostr.Keyer) tea.Cmd {
+// inviteDMCmd sends a DM with a group invite as a bare nostr:naddr1... message.
+// This matches 0xchat's format: the entire message content is just the encoded naddr,
+// which 0xchat and other clients recognize and render as a clickable group invite.
+func inviteDMCmd(pool *nostr.Pool, relays []string, groupName, naddrStr, recipientPK string, keys Keys, kr nostr.Keyer) tea.Cmd {
 	return func() tea.Msg {
-		host := strings.TrimPrefix(strings.TrimPrefix(relayURL, "wss://"), "ws://")
-		dmText := fmt.Sprintf("You've been invited to ~%s\n\n%s'%s", groupName, host, groupID)
-		// Reuse sendDM logic inline — call the returned Cmd directly.
+		dmText := "nostr:" + naddrStr
 		return sendDM(pool, relays, recipientPK, dmText, keys, kr)()
 	}
 }
