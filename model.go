@@ -100,6 +100,11 @@ type model struct {
 	// QR overlay (non-empty = show full-screen QR)
 	qrOverlay string
 
+	// Mouse selection state
+	selecting  bool
+	selectFrom [2]int // [x, y] screen coordinates at press
+	selectTo   [2]int // [x, y] screen coordinates during drag
+
 	// NIP-51 list timestamps — used to detect whether relay data is newer.
 	contactsListTS nostr.Timestamp
 	channelsListTS nostr.Timestamp

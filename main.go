@@ -46,8 +46,9 @@ func main() {
 	isKeygen := len(flag.Args()) > 0 && flag.Args()[0] == "keygen"
 
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		if !isKeygen {
-			initFirstRun(cfgPath)
+		initFirstRun(cfgPath)
+		if isKeygen {
+			return // initFirstRun already generated keypair
 		}
 	}
 

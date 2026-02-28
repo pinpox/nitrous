@@ -96,6 +96,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleDMRelaysPublished(msg)
 	case nip51PublishResultMsg:
 		return m.handleNIP51PublishResult(msg)
+	case clipboardCopiedMsg:
+		return m, nil
 	case tea.KeyMsg:
 		return m.handleKeyMsg(msg)
 	}
@@ -119,12 +121,37 @@ func (m *model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.viewport.ScrollDown(3)
 		return m, nil
 	case tea.MouseButtonLeft:
-		if msg.Action == tea.MouseActionPress && msg.X < m.sidebarWidth() {
-			if idx, ok := m.sidebarItemAt(msg.Y); ok {
-				m.activeItem = idx
-				m.clearUnread()
-				m.updateViewport()
+		switch msg.Action {
+		case tea.MouseActionPress:
+			if msg.X < m.sidebarWidth() {
+				if idx, ok := m.sidebarItemAt(msg.Y); ok {
+					m.activeItem = idx
+					m.clearUnread()
+					m.updateViewport()
+				}
+			} else {
+				m.selecting = true
+				m.selectFrom = [2]int{msg.X, msg.Y}
+				m.selectTo = [2]int{msg.X, msg.Y}
 			}
+		case tea.MouseActionMotion:
+			if m.selecting {
+				m.selectTo = [2]int{msg.X, msg.Y}
+			}
+		case tea.MouseActionRelease:
+			if m.selecting {
+				m.selecting = false
+				m.selectTo = [2]int{msg.X, msg.Y}
+				if text := m.extractSelectedText(); text != "" {
+					return m, copyToClipboard(text)
+				}
+			}
+		}
+		return m, nil
+	case tea.MouseButtonNone:
+		// Motion with no button — clear selection.
+		if msg.Action == tea.MouseActionMotion && m.selecting {
+			m.selectTo = [2]int{msg.X, msg.Y}
 		}
 		return m, nil
 	}

@@ -304,6 +304,10 @@ func (m *model) viewContent() string {
 	inputView := m.input.View()
 	vp := m.viewport.View()
 
+	if m.selecting {
+		vp = m.applySelectionHighlight(vp)
+	}
+
 	var inner string
 	if len(m.acSuggestions) > 0 {
 		acView := m.viewAutocomplete()
