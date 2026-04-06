@@ -6,7 +6,7 @@ import (
 	"log"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip19"
 )
@@ -131,6 +131,9 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 	case "/leave":
 		return m.leaveCurrentItem()
 
+	case "/exit", "/quit":
+		return m.quit()
+
 	case "/help":
 		m.addSystemMsg("/channel create #name — create a NIP-28 channel")
 		m.addSystemMsg("/join #name — join a channel from your rooms file")
@@ -150,6 +153,7 @@ func (m *model) handleCommand(text string) (tea.Model, tea.Cmd) {
 		m.addSystemMsg("/leave — leave the current channel, group, or DM")
 		m.addSystemMsg("/me — show QR code of your npub")
 		m.addSystemMsg("/room — show QR code of the current channel or group")
+		m.addSystemMsg("/exit — quit nitrous")
 		m.addSystemMsg("/help — show this help")
 		return m, nil
 

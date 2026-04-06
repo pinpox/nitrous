@@ -4,17 +4,18 @@ import (
 	"fmt"
 	"log"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip19"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/gen2brain/beeep"
 )
 
 // notifyBody resolves nostr:npub/nprofile references to @displayname for
 // human-readable notification text.
 func notifyBody(content string, profiles map[string]string) string {
-	resolved, _ := renderMentions(content, profiles)
-	return resolved
+	resolved, mentions := renderMentions(content, profiles)
+	return styleMentions(resolved, mentions, lipgloss.NewStyle())
 }
 
 // notifyCmd returns a tea.Cmd that sends desktop and/or bell notifications

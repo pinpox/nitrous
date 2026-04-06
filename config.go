@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"fiatjaf.com/nostr"
+	"github.com/BurntSushi/toml"
 )
 
 type ProfileConfig struct {
@@ -19,16 +19,16 @@ type ProfileConfig struct {
 }
 
 type Config struct {
-	Relays         []string      `toml:"relays"`
-	GroupRelay     string        `toml:"group_relay"`
-	BlossomServers []string      `toml:"blossom_servers"`
-	PrivateKeyFile string        `toml:"private_key_file"`
-	MaxMessages    int           `toml:"max_messages"`
-	Logging        *bool         `toml:"logging"`        // nil = default (true)
-	LogDir         string        `toml:"log_dir"`
-	Theme                string        `toml:"theme"`                  // "auto", "dark", "light"; empty = "auto"
-	NotificationsDesktop *bool         `toml:"notifications_desktop"`  // nil = default (true)
-	NotificationsBell    *bool         `toml:"notifications_bell"`     // nil = default (true)
+	Relays               []string      `toml:"relays"`
+	GroupRelay           string        `toml:"group_relay"`
+	BlossomServers       []string      `toml:"blossom_servers"`
+	PrivateKeyFile       string        `toml:"private_key_file"`
+	MaxMessages          int           `toml:"max_messages"`
+	Logging              *bool         `toml:"logging"` // nil = default (true)
+	LogDir               string        `toml:"log_dir"`
+	Theme                string        `toml:"theme"`                 // "auto", "dark", "light"; empty = "auto"
+	NotificationsDesktop *bool         `toml:"notifications_desktop"` // nil = default (true)
+	NotificationsBell    *bool         `toml:"notifications_bell"`    // nil = default (true)
 	Profile              ProfileConfig `toml:"profile"`
 }
 
@@ -158,5 +158,3 @@ type SavedGroup struct {
 	RelayURL string
 	GroupID  string
 }
-
-

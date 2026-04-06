@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"charm.land/bubbles/v2/key"
 	"github.com/BurntSushi/toml"
-	"github.com/charmbracelet/bubbles/key"
 )
 
 // KeyMap holds the configurable keybindings. Only bindings that commonly

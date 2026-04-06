@@ -8,13 +8,13 @@ import (
 	"io"
 	"log"
 	"mime"
-	"strconv"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -116,26 +116,56 @@ func downloadURL(ctx context.Context, rawURL, cacheDir, peerPK string) (string, 
 		return "", fmt.Errorf("creating attachments dir: %w", err)
 	}
 
-	f, err := os.Create(cachedPath)
+	// Download to a sibling temp file and rename into place only on full
+	// success. This makes the cache hit above (os.Stat on cachedPath)
+	// safe: a process kill mid-copy leaves only a temp file, never a
+	// short file at cachedPath, so the next run re-downloads instead of
+	// returning truncated garbage. CreateTemp avoids two concurrent
+	// downloads of the same URL clobbering each other's partial file;
+	// on POSIX the final rename atomically replaces, so whoever finishes
+	// last wins and both see a complete file.
+	f, err := os.CreateTemp(downloadDir, ".dl-*")
 	if err != nil {
 		return "", fmt.Errorf("creating file: %w", err)
 	}
-	defer func() { _ = f.Close() }()
+	partPath := f.Name()
+	// Single cleanup point: removes the temp file on any non-success exit.
+	// On success the rename
+	// has already moved it away so Remove is a harmless ENOENT. The
+	// f != nil guard avoids the double-close that previously happened on
+	// error paths.
+	defer func() {
+		if f != nil {
+			_ = f.Close()
+		}
+		_ = os.Remove(partPath)
+	}()
 
 	// Limit download size to prevent disk exhaustion.
 	limited := io.LimitReader(resp.Body, maxDownloadSize+1)
 
 	n, err := io.Copy(f, limited)
 	if err != nil {
-		_ = f.Close()
-		_ = os.Remove(cachedPath)
 		return "", fmt.Errorf("writing file: %w", err)
 	}
-
 	if n > maxDownloadSize {
-		_ = f.Close()
-		_ = os.Remove(cachedPath)
 		return "", fmt.Errorf("download exceeds maximum size of %d bytes", maxDownloadSize)
+	}
+
+	// Sync + Close must be checked: ENOSPC and EIO on networked or fuse
+	// filesystems often surface only here, after io.Copy has happily
+	// returned. Swallowing them would put a corrupt file into the cache.
+	if err := f.Sync(); err != nil {
+		return "", fmt.Errorf("syncing file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		f = nil
+		return "", fmt.Errorf("closing file: %w", err)
+	}
+	f = nil
+
+	if err := os.Rename(partPath, cachedPath); err != nil {
+		return "", fmt.Errorf("renaming file: %w", err)
 	}
 
 	return cachedPath, nil

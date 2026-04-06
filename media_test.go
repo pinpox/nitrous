@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"fiatjaf.com/nostr"
 )
@@ -259,6 +261,122 @@ func TestHandleFileMessage_EmptyContent(t *testing.T) {
 	if !strings.Contains(result, "no URL") {
 		t.Errorf("expected no URL message, got %q", result)
 	}
+}
+
+// TestDownloadURL_KillMidCopy reproduces the actual bug: a process
+// killed mid-download leaving a truncated file at the cache path that
+// the next run accepts as "already cached".
+//
+// The old code wrote straight to cachedPath. SIGKILL bypasses all
+// defers, so the partial bytes already on disk stayed there. The fix
+// writes to .part and renames only after a checked Sync+Close — SIGKILL
+// leaves a .part file that the os.Stat cache check ignores.
+//
+// We can't kill our own process, so we re-exec the test binary as a
+// child. The child enters TestMain, sees NITROUS_TEST_DOWNLOAD_KILL,
+// and runs downloadURL against a server that stalls forever — but only
+// after the child has signalled (via a side-band HTTP hit) that
+// io.Copy has begun. The parent then SIGKILLs.
+func TestDownloadURL_KillMidCopy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("re-execs test binary")
+	}
+
+	cacheDir := t.TempDir()
+	rawURL, unblock, stop := serveSlowAndWaitForCopy(t)
+	defer stop()
+
+	// First run: child process, killed mid-copy.
+	cmd := exec.Command(os.Args[0], "-test.run=^$")
+	cmd.Env = append(os.Environ(),
+		"NITROUS_TEST_DOWNLOAD_KILL=1",
+		"NITROUS_TEST_URL="+rawURL,
+		"NITROUS_TEST_CACHE="+cacheDir,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start child: %v", err)
+	}
+	waitForChildToBeginCopy(t)
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("SIGKILL: %v", err)
+	}
+	_ = cmd.Wait()
+	unblock() // release the stalled handler so srv.Close returns promptly
+
+	// The bug: old code already created cachedPath by now.
+	// Compute the path the same way downloadURL does (peerPK
+	// truncated to 8 chars; sha256(url)[:8].ext).
+	urlHash := sha256.Sum256([]byte(rawURL))
+	cachedPath := filepath.Join(cacheDir, "attachments", "killpeer",
+		hex.EncodeToString(urlHash[:8])+".bin")
+
+	if _, err := os.Stat(cachedPath); err == nil {
+		got, _ := os.ReadFile(cachedPath)
+		t.Fatalf("SIGKILL mid-copy left %d bytes at cache path — "+
+			"next run would return this as a cache hit", len(got))
+	}
+
+	// A .part file is acceptable — it's invisible to the cache check
+	// and will be truncated by the next os.Create. (We don't assert
+	// it exists because the kill might land before os.Create.)
+}
+
+// childCopying is closed by serveSlowAndWaitForCopy's handler once it
+// has flushed bytes to the child, proving io.Copy is in progress.
+var childCopying chan struct{}
+
+func serveSlowAndWaitForCopy(t *testing.T) (rawURL string, unblock, stop func()) {
+	t.Helper()
+	childCopying = make(chan struct{})
+	release := make(chan struct{})
+	var signalled bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Write a chunk and flush so the child's io.Copy actually
+		// puts bytes on disk before we kill it.
+		_, _ = w.Write([]byte("partial-bytes-on-disk"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		if !signalled {
+			signalled = true
+			close(childCopying)
+		}
+		// Stall until the parent releases us (after SIGKILL +
+		// Wait). The child's io.Copy blocks here. Bounded so a
+		// test bug can't wedge the suite.
+		select {
+		case <-release:
+		case <-time.After(10 * time.Second):
+		}
+	}))
+	return srv.URL + "/slow.bin", func() { close(release) }, srv.Close
+}
+
+func waitForChildToBeginCopy(t *testing.T) {
+	t.Helper()
+	select {
+	case <-childCopying:
+		// Give io.Copy a moment to actually write(2) those bytes.
+		// We could fsync-probe but this is enough in practice.
+		time.Sleep(50 * time.Millisecond)
+	case <-time.After(5 * time.Second):
+		t.Fatal("child never began downloading")
+	}
+}
+
+// downloadKillChildMain is invoked from TestMain when re-exec'd by
+// TestDownloadURL_KillMidCopy. It never returns: io.Copy blocks on the
+// stalled server until the parent SIGKILLs.
+func downloadKillChildMain() {
+	_, _ = downloadURL(context.Background(),
+		os.Getenv("NITROUS_TEST_URL"),
+		os.Getenv("NITROUS_TEST_CACHE"),
+		"killpeer")
+	// Unreachable: server stalls until we're killed. If we get here
+	// the server stopped stalling — exit nonzero so the parent's
+	// os.Stat check is the only thing that can pass.
+	os.Exit(2)
 }
 
 func TestDownloadURL_PreservesExtension(t *testing.T) {

@@ -4,15 +4,15 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
 	"fiatjaf.com/nostr"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
 )
 
 // testModel creates a minimal model for autocomplete testing.
 func testModel() model {
 	ta := textarea.New()
-	vp := viewport.New(80, 20)
+	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 	return model{
 		profiles:       make(map[string]string),
 		profilePending: make(map[string]bool),

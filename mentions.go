@@ -2,11 +2,12 @@ package main
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip19"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // mentionPattern matches @username at word boundaries. The @ must be at the
@@ -65,12 +66,22 @@ func resolveMentions(content string, profiles map[string]string) (string, []stri
 	return result, mentionedPKs
 }
 
+// mentionPlaceholderPattern matches the NUL-delimited markers inserted by
+// renderMentions for resolved mentions.
+var mentionPlaceholderPattern = regexp.MustCompile("\x00M([0-9]+)\x00")
+
 // renderMentions replaces nostr:npub1... and nostr:nprofile1... references in
 // content with @displayname for readability. Falls back to @npub1<8chars>...
-// if the pubkey is not in the profiles map. Returns the rewritten content and
-// a list of resolved @displayname strings (for post-render styling).
+// if the pubkey is not in the profiles map.
+//
+// Resolved mentions are emitted as NUL-delimited placeholders (\x00M<n>\x00)
+// rather than the literal @displayname; the second return value is the
+// placeholder-index → @displayname table. Callers MUST pass the result
+// through styleMentions to obtain human-readable text. The placeholder layer
+// exists so styling can be applied after markdown rendering without substring
+// collisions (e.g. @al matching the prefix of @alice) or ANSI corruption.
 func renderMentions(content string, profiles map[string]string) (string, []string) {
-	seen := make(map[string]bool)
+	seen := make(map[string]int)
 	var resolved []string
 
 	out := nostrMentionPattern.ReplaceAllStringFunc(content, func(match string) string {
@@ -102,11 +113,13 @@ func renderMentions(content string, profiles map[string]string) (string, []strin
 
 		if name, found := profiles[hexPK]; found {
 			mention := "@" + name
-			if !seen[mention] {
-				seen[mention] = true
+			idx, ok := seen[mention]
+			if !ok {
+				idx = len(resolved)
+				seen[mention] = idx
 				resolved = append(resolved, mention)
 			}
-			return mention
+			return "\x00M" + strconv.Itoa(idx) + "\x00"
 		}
 
 		// Truncated fallback: @npub1<8chars>... or @nprofile1<8chars>...
@@ -119,12 +132,16 @@ func renderMentions(content string, profiles map[string]string) (string, []strin
 	return out, resolved
 }
 
-// styleMentions applies ANSI styling to resolved @displayname strings in
-// already-rendered content. Call this after markdown rendering.
+// styleMentions replaces the NUL-delimited placeholders inserted by
+// renderMentions with styled @displayname strings. Call this after markdown
+// rendering. Passing an empty lipgloss.Style yields plain text (used by the
+// notification path).
 func styleMentions(content string, mentions []string, style lipgloss.Style) string {
-	for _, m := range mentions {
-		styled := style.Render(m)
-		content = strings.ReplaceAll(content, m, styled)
-	}
-	return content
+	return mentionPlaceholderPattern.ReplaceAllStringFunc(content, func(match string) string {
+		n, err := strconv.Atoi(match[2 : len(match)-1])
+		if err != nil || n < 0 || n >= len(mentions) {
+			return match
+		}
+		return style.Render(mentions[n])
+	})
 }

@@ -40,8 +40,8 @@ func TestColorForPubkey(t *testing.T) {
 
 	t.Run("nil colors returns hardcoded fallback", func(t *testing.T) {
 		c := colorForPubkey("ab", nil)
-		if c == "" {
-			t.Error("expected a non-empty fallback color")
+		if c == nil {
+			t.Error("expected a non-nil fallback color")
 		}
 	})
 }

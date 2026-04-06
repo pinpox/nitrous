@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
+
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip19"
 )
@@ -149,14 +151,15 @@ func TestRenderMentions_KnownNpub(t *testing.T) {
 	npub := nip19.EncodeNpub(alicePK)
 
 	content, resolved := renderMentions("hello nostr:"+npub, profiles)
-	if !strings.Contains(content, "@alice") {
-		t.Errorf("expected @alice in rendered content, got %q", content)
-	}
 	if strings.Contains(content, "nostr:") {
 		t.Errorf("expected nostr: reference to be replaced, got %q", content)
 	}
 	if len(resolved) != 1 || resolved[0] != "@alice" {
 		t.Errorf("expected resolved=[@alice], got %v", resolved)
+	}
+	plain := styleMentions(content, resolved, lipgloss.NewStyle())
+	if !strings.Contains(plain, "@alice") {
+		t.Errorf("expected @alice after placeholder expansion, got %q", plain)
 	}
 }
 
@@ -186,14 +189,15 @@ func TestRenderMentions_KnownNprofile(t *testing.T) {
 	nprofile := nip19.EncodeNprofile(alicePK, []string{"wss://relay.example.com"})
 
 	content, resolved := renderMentions("hello nostr:"+nprofile, profiles)
-	if !strings.Contains(content, "@alice") {
-		t.Errorf("expected @alice in rendered content, got %q", content)
-	}
 	if strings.Contains(content, "nostr:") {
 		t.Errorf("expected nostr: reference to be replaced, got %q", content)
 	}
 	if len(resolved) != 1 || resolved[0] != "@alice" {
 		t.Errorf("expected resolved=[@alice], got %v", resolved)
+	}
+	plain := styleMentions(content, resolved, lipgloss.NewStyle())
+	if !strings.Contains(plain, "@alice") {
+		t.Errorf("expected @alice after placeholder expansion, got %q", plain)
 	}
 }
 
@@ -222,13 +226,86 @@ func TestRenderMentions_MultipleNpubs(t *testing.T) {
 	npubBob := nip19.EncodeNpub(bobPK)
 
 	content, resolved := renderMentions("nostr:"+npubAlice+" and nostr:"+npubBob, profiles)
-	if !strings.Contains(content, "@alice") {
-		t.Errorf("expected @alice, got %q", content)
+	plain := styleMentions(content, resolved, lipgloss.NewStyle())
+	if !strings.Contains(plain, "@alice") {
+		t.Errorf("expected @alice, got %q", plain)
 	}
-	if !strings.Contains(content, "@bob") {
-		t.Errorf("expected @bob, got %q", content)
+	if !strings.Contains(plain, "@bob") {
+		t.Errorf("expected @bob, got %q", plain)
 	}
 	if len(resolved) != 2 {
 		t.Errorf("expected 2 resolved mentions, got %v", resolved)
+	}
+}
+
+// styleMentions tests use a sentinel-wrapped style so we can count occurrences
+// without depending on terminal color profile.
+func sentinelStyle() lipgloss.Style {
+	return lipgloss.NewStyle().SetString("\u00ab").Reverse(true)
+}
+
+func TestStyleMentions_PrefixCollision(t *testing.T) {
+	// Regression: a resolved mention "@al" must not style the "@al" prefix
+	// of "@alice". Drive through renderMentions so we test the real flow.
+	profiles := map[string]string{
+		"aaaa000000000000000000000000000000000000000000000000000000000001": "al",
+	}
+	alPK, _ := nostr.PubKeyFromHex("aaaa000000000000000000000000000000000000000000000000000000000001")
+	npub := nip19.EncodeNpub(alPK)
+
+	// "@alice" is plain literal text (not a nostr: ref), "@al" is a real mention.
+	raw := "hello @alice and nostr:" + npub
+	rendered, resolved := renderMentions(raw, profiles)
+
+	style := sentinelStyle()
+	out := styleMentions(rendered, resolved, style)
+
+	want := "hello @alice and " + style.Render("@al")
+	if out != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+	if n := strings.Count(out, "\u00ab"); n != 1 {
+		t.Errorf("expected exactly 1 styled mention, got %d in %q", n, out)
+	}
+}
+
+func TestStyleMentions_OrderIndependent(t *testing.T) {
+	// Regression: mentions ["@ab", "@abc"] must both style correctly
+	// regardless of iteration order, with no nested/corrupted escapes.
+	profiles := map[string]string{
+		"aaaa000000000000000000000000000000000000000000000000000000000001": "ab",
+		"bbbb000000000000000000000000000000000000000000000000000000000002": "abc",
+	}
+	abPK, _ := nostr.PubKeyFromHex("aaaa000000000000000000000000000000000000000000000000000000000001")
+	abcPK, _ := nostr.PubKeyFromHex("bbbb000000000000000000000000000000000000000000000000000000000002")
+
+	raw := "nostr:" + nip19.EncodeNpub(abPK) + " and nostr:" + nip19.EncodeNpub(abcPK)
+	rendered, resolved := renderMentions(raw, profiles)
+
+	style := sentinelStyle()
+	out := styleMentions(rendered, resolved, style)
+
+	want := style.Render("@ab") + " and " + style.Render("@abc")
+	if out != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+	// No double-styling: total sentinel count must equal mention count.
+	if n := strings.Count(out, "\u00ab"); n != 2 {
+		t.Errorf("expected 2 sentinel markers (one per mention), got %d in %q", n, out)
+	}
+}
+
+func TestStyleMentions_NoOpStyleStripsPlaceholders(t *testing.T) {
+	// Notification path: applying an empty style must yield plain @displayname
+	// text with no placeholder residue.
+	profiles := testProfiles()
+	alicePK, _ := nostr.PubKeyFromHex("aaaa000000000000000000000000000000000000000000000000000000000001")
+	npub := nip19.EncodeNpub(alicePK)
+
+	rendered, resolved := renderMentions("hi nostr:"+npub+"!", profiles)
+	out := styleMentions(rendered, resolved, lipgloss.NewStyle())
+
+	if out != "hi @alice!" {
+		t.Errorf("expected %q, got %q", "hi @alice!", out)
 	}
 }

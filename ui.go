@@ -2,9 +2,10 @@ package main
 
 import (
 	"encoding/hex"
+	"image/color"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
 
@@ -13,13 +14,13 @@ import (
 // rendering code, replacing the former package-level style variables.
 type Theme struct {
 	// Colour roles
-	Primary   lipgloss.Color
-	Secondary lipgloss.Color
-	Muted     lipgloss.Color
-	Highlight lipgloss.Color
-	StatusBg  lipgloss.Color
-	Text      lipgloss.Color
-	Success   lipgloss.Color
+	Primary   color.Color
+	Secondary color.Color
+	Muted     color.Color
+	Highlight color.Color
+	StatusBg  color.Color
+	Text      color.Color
+	Success   color.Color
 
 	// Pre-built styles
 	Sidebar         lipgloss.Style
@@ -40,7 +41,7 @@ type Theme struct {
 	ChatMention     lipgloss.Style
 
 	// Author colour palette for per-pubkey colouring.
-	AuthorColors []lipgloss.Color
+	AuthorColors []color.Color
 
 	// Glamour markdown renderer style ("dark" or "light").
 	GlamourStyle string
@@ -57,19 +58,19 @@ func buildTheme(isDark bool) Theme {
 		t.StatusBg = lipgloss.Color("#24283B")
 		t.Text = lipgloss.Color("#C0CAF5")
 		t.Success = lipgloss.Color("#9ECE6A")
-		t.AuthorColors = []lipgloss.Color{
-			"#7B68EE", // medium slate blue
-			"#FF6B6B", // coral red
-			"#4ECDC4", // teal
-			"#FFD93D", // gold
-			"#C084FC", // violet
-			"#FF8C42", // orange
-			"#4D96FF", // blue
-			"#FF6EC7", // hot pink
-			"#00D2FF", // cyan
-			"#E879F9", // fuchsia
-			"#F5A623", // amber
-			"#7FDBCA", // mint
+		t.AuthorColors = []color.Color{
+			lipgloss.Color("#7B68EE"), // medium slate blue
+			lipgloss.Color("#FF6B6B"), // coral red
+			lipgloss.Color("#4ECDC4"), // teal
+			lipgloss.Color("#FFD93D"), // gold
+			lipgloss.Color("#C084FC"), // violet
+			lipgloss.Color("#FF8C42"), // orange
+			lipgloss.Color("#4D96FF"), // blue
+			lipgloss.Color("#FF6EC7"), // hot pink
+			lipgloss.Color("#00D2FF"), // cyan
+			lipgloss.Color("#E879F9"), // fuchsia
+			lipgloss.Color("#F5A623"), // amber
+			lipgloss.Color("#7FDBCA"), // mint
 		}
 		t.GlamourStyle = "dark"
 	} else {
@@ -80,19 +81,19 @@ func buildTheme(isDark bool) Theme {
 		t.StatusBg = lipgloss.Color("#E8E4F0")
 		t.Text = lipgloss.Color("#2E2E3E")
 		t.Success = lipgloss.Color("#2E7D32")
-		t.AuthorColors = []lipgloss.Color{
-			"#4B38AE", // deep slate blue
-			"#C0392B", // dark red
-			"#1A8A7D", // dark teal
-			"#B8860B", // dark goldenrod
-			"#7B2D8E", // dark violet
-			"#C0561A", // dark orange
-			"#1A5DB0", // dark blue
-			"#B03060", // dark pink
-			"#007A99", // dark cyan
-			"#9B30FF", // dark fuchsia
-			"#CC7A00", // dark amber
-			"#1A6B5A", // dark mint
+		t.AuthorColors = []color.Color{
+			lipgloss.Color("#4B38AE"), // deep slate blue
+			lipgloss.Color("#C0392B"), // dark red
+			lipgloss.Color("#1A8A7D"), // dark teal
+			lipgloss.Color("#B8860B"), // dark goldenrod
+			lipgloss.Color("#7B2D8E"), // dark violet
+			lipgloss.Color("#C0561A"), // dark orange
+			lipgloss.Color("#1A5DB0"), // dark blue
+			lipgloss.Color("#B03060"), // dark pink
+			lipgloss.Color("#007A99"), // dark cyan
+			lipgloss.Color("#9B30FF"), // dark fuchsia
+			lipgloss.Color("#CC7A00"), // dark amber
+			lipgloss.Color("#1A6B5A"), // dark mint
 		}
 		t.GlamourStyle = "light"
 	}
@@ -183,7 +184,7 @@ func resolveTheme(cfg Config) Theme {
 
 // colorForPubkey derives a stable color from a hex pubkey using the given
 // author colour palette.
-func colorForPubkey(pubkey string, colors []lipgloss.Color) lipgloss.Color {
+func colorForPubkey(pubkey string, colors []color.Color) color.Color {
 	if len(colors) == 0 {
 		// Fallback to a hard-coded dark default so we never panic.
 		return lipgloss.Color("#7B68EE")

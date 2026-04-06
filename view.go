@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"fiatjaf.com/nostr"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
-	"fiatjaf.com/nostr"
 )
 
 // sidebarItemAt maps a Y coordinate to a sidebar item index.
@@ -82,7 +83,7 @@ func (m *model) updateLayout() {
 	}
 
 	// Set widths first so measured heights are accurate.
-	m.viewport.Width = contentWidth
+	m.viewport.SetWidth(contentWidth)
 	m.input.SetWidth(contentWidth)
 
 	// Measure fixed-height components dynamically.
@@ -99,7 +100,7 @@ func (m *model) updateLayout() {
 		contentHeight = 1
 	}
 
-	m.viewport.Height = contentHeight
+	m.viewport.SetHeight(contentHeight)
 	m.updateViewport()
 }
 
@@ -171,7 +172,7 @@ func (m *model) updateViewport() {
 		prefix := fmt.Sprintf("%s %s: ", ts, author)
 		prefixW := lipgloss.Width(prefix)
 		pad := strings.Repeat(" ", prefixW)
-		wrapWidth := m.viewport.Width - prefixW
+		wrapWidth := m.viewport.Width() - prefixW
 		if wrapWidth < 1 {
 			wrapWidth = 1
 		}
@@ -189,9 +190,9 @@ func (m *model) updateViewport() {
 		// Word-wrap at word boundaries, then hard-wrap any remaining
 		// overflows (long unbroken words like URLs) at the full viewport
 		// width so continuation lines aren't indented under the author prefix.
-		fullWidth := m.viewport.Width
+		fullWidth := m.viewport.Width()
 		type cLine struct {
-			text    string
+			text     string
 			hardWrap bool // true = from hard-wrapping a long token (no prefix pad)
 		}
 		var contentLines []cLine
@@ -226,7 +227,15 @@ func (m *model) updateViewport() {
 	m.viewport.GotoBottom()
 }
 
-func (m *model) View() string {
+func (m *model) View() tea.View {
+	v := tea.NewView(m.viewString())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	v.ReportFocus = true
+	return v
+}
+
+func (m *model) viewString() string {
 	if m.width == 0 {
 		return "Loading..."
 	}
@@ -399,7 +408,7 @@ func (m *model) viewChannelSelector() string {
 	// Show filtered items
 	start := 0
 	end := len(m.channelSelectorItems)
-	
+
 	// Scroll if there are more items than can fit
 	if len(m.channelSelectorItems) > maxItems {
 		if m.channelSelectorIndex >= maxItems/2 {
@@ -422,7 +431,7 @@ func (m *model) viewChannelSelector() string {
 		prefix := item.Prefix()
 		name := item.DisplayName()
 		line := fmt.Sprintf("%s%s", prefix, name)
-		
+
 		if i == m.channelSelectorIndex {
 			line = m.theme.SidebarSelected.Render(line)
 		}
@@ -435,7 +444,7 @@ func (m *model) viewChannelSelector() string {
 	}
 
 	content := strings.Join(items, "\n")
-	
+
 	// Style the popup with border
 	popup := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

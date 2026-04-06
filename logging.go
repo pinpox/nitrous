@@ -148,6 +148,8 @@ func readLastNLines(f *os.File, n int) ([]string, error) {
 	offset := size
 	linesFound := 0
 
+	// Read until we have at least n+1 newlines: the (n+1)th delimiter is the
+	// one before the nth-from-last line, ensuring it's complete in buf.
 	for offset > 0 && linesFound <= n {
 		readSize := int64(chunkSize)
 		if readSize > offset {
@@ -170,14 +172,21 @@ func readLastNLines(f *os.File, n int) ([]string, error) {
 		}
 	}
 
-	// Split into lines and take the last n non-empty lines.
+	// Split into lines and take the last n. Chat messages can be large (long
+	// pastes, base64 blobs); raise the scanner's token limit well past the
+	// 64 KiB default so we don't silently drop the tail of the log.
 	scanner := bufio.NewScanner(strings.NewReader(string(buf)))
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024)
 	var allLines []string
 	for scanner.Scan() {
-		line := scanner.Text()
-		if line != "" {
+		// appendLogEntry never writes blank lines (always "ts\t...\n").
+		// Guard anyway: a stray blank would otherwise fail parseLogLine.
+		if line := scanner.Text(); line != "" {
 			allLines = append(allLines, line)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scanning log lines: %w", err)
 	}
 
 	if len(allLines) > n {
@@ -206,5 +215,3 @@ func parseLogLine(line string) (ChatMessage, error) {
 		Content:   unescapeContent(parts[4]),
 	}, nil
 }
-
-

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/exp/teatest"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/exp/teatest/v2"
 
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/eventstore/slicestore"
@@ -47,11 +47,11 @@ func startTestRelay(t *testing.T) (relayURL string, cleanup func()) {
 // ─── Test client helper ──────────────────────────────────────────────────────
 
 type testClient struct {
-	tm     *teatest.TestModel
-	keys   Keys
-	npub   string
-	hexPK  string
-	name   string
+	tm    *teatest.TestModel
+	keys  Keys
+	npub  string
+	hexPK string
+	name  string
 }
 
 func generateTestKeys(t *testing.T) Keys {
@@ -115,11 +115,11 @@ func waitFor(t *testing.T, tm *teatest.TestModel, substr string, timeout time.Du
 
 func typeCmd(tm *teatest.TestModel, text string) {
 	tm.Type(text)
-	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
 func sendCtrlUp(tm *teatest.TestModel) {
-	tm.Send(tea.KeyMsg{Type: tea.KeyCtrlUp})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModCtrl})
 }
 
 // queryRelayEvents queries the embedded relay for events matching the filter.
@@ -586,16 +586,16 @@ func TestIntegration(t *testing.T) {
 
 		// Bob types "/join " and presses Tab to autocomplete the naddr
 		// from the invite message in the current chat.
-		bob.tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/join ")})
+		bob.tm.Type("/join ")
 		time.Sleep(1 * time.Second)
-		bob.tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+		bob.tm.Send(tea.KeyPressMsg{Code: tea.KeyTab})
 		time.Sleep(1 * time.Second)
 
 		// Verify the autocomplete filled in an naddr.
 		waitFor(t, bob.tm, "naddr1", defaultTimeout)
 
 		// Press Enter to join.
-		bob.tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+		bob.tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
 		time.Sleep(3 * time.Second)
 
 		// Verify bob joined by checking for a join request (kind 9021) on the relay.
@@ -671,7 +671,7 @@ func TestIntegration(t *testing.T) {
 		typeCmd(alice.tm, "/me")
 		waitFor(t, alice.tm, alice.npub, defaultTimeout)
 		// Dismiss QR overlay.
-		alice.tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+		alice.tm.Send(tea.KeyPressMsg{Code: tea.KeyEscape})
 		time.Sleep(500 * time.Millisecond)
 	})
 
@@ -687,7 +687,7 @@ func TestIntegration(t *testing.T) {
 
 		typeCmd(alice.tm, "/room")
 		waitFor(t, alice.tm, "nevent", defaultTimeout)
-		alice.tm.Send(tea.KeyMsg{Type: tea.KeyEsc})
+		alice.tm.Send(tea.KeyPressMsg{Code: tea.KeyEscape})
 		time.Sleep(500 * time.Millisecond)
 	})
 

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"fiatjaf.com/nostr"
 	"fiatjaf.com/nostr/nip19"
 	"fiatjaf.com/nostr/nip29"
@@ -60,13 +60,6 @@ type groupCreatedMsg struct {
 	RelayURL string
 	GroupID  string
 	Name     string
-}
-
-// groupInviteCreatedMsg is returned after publishing a kind 9009 invite event.
-type groupInviteCreatedMsg struct {
-	RelayURL string
-	GroupID  string
-	Code     string
 }
 
 // subscribeGroupCmd opens a subscription on a single relay for a NIP-29 group.
@@ -493,35 +486,6 @@ func buildCreateGroupInviteEvent(groupID string, previousIDs []string, keys Keys
 		return evt, err
 	}
 	return evt, nil
-}
-
-// createGroupInviteCmd publishes a kind 9009 event to create an invite for a NIP-29 group.
-//nolint:unused // will be wired to /group invite command
-func createGroupInviteCmd(pool *nostr.Pool, relayURL, groupID string, previousIDs []string, keys Keys) tea.Cmd {
-	return func() tea.Msg {
-		evt, err := buildCreateGroupInviteEvent(groupID, previousIDs, keys)
-		if err != nil {
-			return nostrErrMsg{fmt.Errorf("create invite: sign: %w", err)}
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		r, err := pool.EnsureRelay(relayURL)
-		if err != nil {
-			return nostrErrMsg{fmt.Errorf("create invite: connect %s: %w", relayURL, err)}
-		}
-		if err := r.Publish(ctx, evt); err != nil {
-			return nostrErrMsg{fmt.Errorf("create invite: publish: %w", err)}
-		}
-
-		// Use the event ID as the invite code; r.Publish does not return
-		// relay-generated content, and buildCreateGroupInviteEvent leaves
-		// Content empty, so the event ID is the only stable identifier.
-		code := evt.GetID().Hex()
-
-		log.Printf("createGroupInviteCmd: invite for group %s on %s: %s", groupID, relayURL, code)
-		return groupInviteCreatedMsg{RelayURL: relayURL, GroupID: groupID, Code: code}
-	}
 }
 
 // inviteDMCmd sends a DM with a group invite as a bare nostr:naddr1... message.

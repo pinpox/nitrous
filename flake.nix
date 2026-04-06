@@ -16,7 +16,7 @@
           pname = "nitrous";
           version = "0.1.0";
           src = ./.;
-          vendorHash = "sha256-LoGd/bBVzpuIj+vHno1kBQxZCyhaIzMZGg+RcvZxaqE=";
+          vendorHash = "sha256-IwQ34AHGWABvqu5CVOmYf1uyXpPnUWGA1neVJf+Eh60=";
 
           doCheck = false;
 

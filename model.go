@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/lipgloss"
-	qrterminal "github.com/mdp/qrterminal/v3"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"fiatjaf.com/nostr"
+	"github.com/charmbracelet/glamour"
+	qrterminal "github.com/mdp/qrterminal/v3"
 )
 
 // Group represents a NIP-29 relay-based group.
@@ -44,8 +44,7 @@ type model struct {
 	// Focus tracking for notifications
 	focused   bool
 	startedAt nostr.Timestamp // suppress notifications for messages older than startup
-	relays      []string
-
+	relays    []string
 
 	// TUI dimensions
 	width  int
@@ -80,8 +79,8 @@ type model struct {
 
 	// Dedup
 	seenEvents      map[string]time.Time
-	seenEventsClean time.Time // last time stale entries were evicted
-	localDMEchoes map[string]time.Time // "peer:content" keys for sent DMs awaiting relay echo
+	seenEventsClean time.Time            // last time stale entries were evicted
+	localDMEchoes   map[string]time.Time // "peer:content" keys for sent DMs awaiting relay echo
 
 	// Unread indicators (keyed by channel ID, group key, or DM peer pubkey)
 	unread        map[string]bool
@@ -111,10 +110,10 @@ type model struct {
 	qrOverlay string
 
 	// Channel selector popup state
-	showChannelSelector bool
+	showChannelSelector  bool
 	channelSelectorInput string
-	channelSelectorItems []SidebarItem  // filtered items
-	channelSelectorIndex int            // selected index in filtered list
+	channelSelectorItems []SidebarItem // filtered items
+	channelSelectorIndex int           // selected index in filtered list
 
 	// Mouse selection state
 	selecting  bool
@@ -178,6 +177,16 @@ func (m *model) cancelAllRoomSubs() {
 	}
 }
 
+// quit cancels all subscriptions and returns the quit command. Used by
+// the ctrl+c keybinding and the /exit slash command.
+func (m *model) quit() (tea.Model, tea.Cmd) {
+	m.cancelAllRoomSubs()
+	if m.dmCancel != nil {
+		m.dmCancel()
+	}
+	return m, tea.Quit
+}
+
 // isChannelSelected returns true if the active sidebar item is a channel.
 func (m *model) isChannelSelected() bool {
 	item := m.activeSidebarItem()
@@ -239,8 +248,6 @@ func (m *model) activeSidebarItem() SidebarItem {
 	return nil
 }
 
-
-
 func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr nostr.Keyer, mdRender *glamour.TermRenderer, theme Theme, keymap KeyMap) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message... (/help for commands)"
@@ -249,12 +256,14 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr no
 	ta.SetHeight(inputMinHeight)
 	ta.MaxHeight = inputMaxHeight
 	ta.ShowLineNumbers = false
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	styles := ta.Styles()
+	styles.Focused.CursorLine = lipgloss.NewStyle()
+	styles.Blurred.CursorLine = lipgloss.NewStyle()
+	ta.SetStyles(styles)
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "ctrl+j"))
 	ta.Focus()
 
-	vp := viewport.New(80, 20)
+	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 
 	// Pre-cache own display name from config fallback chain.
 	ownName := shortPK(keys.PK.Hex())
@@ -291,39 +300,39 @@ func newModel(cfg Config, cfgFlagPath string, keys Keys, pool *nostr.Pool, kr no
 	cacheDir = filepath.Join(cacheDir, "nitrous")
 
 	return model{
-		keymap:      keymap,
-		theme:       theme,
-		cfg:         cfg,
-		cfgFlagPath: cfgFlagPath,
-		keys:        keys,
-		pool:        pool,
-		kr:          kr,
-		focused:     true,
-		startedAt:   nostr.Now(),
-		relays:      cfg.Relays,
-		width:       80,
-		height:      24,
-		activeItem:  0,
+		keymap:          keymap,
+		theme:           theme,
+		cfg:             cfg,
+		cfgFlagPath:     cfgFlagPath,
+		keys:            keys,
+		pool:            pool,
+		kr:              kr,
+		focused:         true,
+		startedAt:       nostr.Now(),
+		relays:          cfg.Relays,
+		width:           80,
+		height:          24,
+		activeItem:      0,
 		roomSubs:        make(map[string]*roomSub),
 		groupRecentIDs:  make(map[string][]string),
-		msgs:           make(map[string][]ChatMessage),
-		lastDMSeen:     lastSeen,
-		dmSeenAtStart:  lastSeen,
+		msgs:            make(map[string][]ChatMessage),
+		lastDMSeen:      lastSeen,
+		dmSeenAtStart:   lastSeen,
 		seenEvents:      make(map[string]time.Time),
 		seenEventsClean: time.Now(),
-		unread:         make(map[string]bool),
-		localDMEchoes:  make(map[string]time.Time),
-		profiles:       profiles,
+		unread:          make(map[string]bool),
+		localDMEchoes:   make(map[string]time.Time),
+		profiles:        profiles,
 		profilePending:  make(map[string]bool),
 		fetchedContacts: make(map[string]bool),
 		lastInputHeight: inputMinHeight,
 		historyIndex:    -1,
-		viewport:       vp,
-		input:          ta,
-		mdRender:       mdRender,
-		statusMsg:      fmt.Sprintf("connected to %d relays", len(cfg.Relays)),
-		logDir:         logDir,
-		cacheDir:       cacheDir,
+		viewport:        vp,
+		input:           ta,
+		mdRender:        mdRender,
+		statusMsg:       fmt.Sprintf("connected to %d relays", len(cfg.Relays)),
+		logDir:          logDir,
+		cacheDir:        cacheDir,
 	}
 }
 
@@ -431,7 +440,7 @@ func (m *model) clearUnread() {
 func (m *model) updateChannelSelectorItems() {
 	m.channelSelectorItems = nil
 	filter := strings.ToLower(m.channelSelectorInput)
-	
+
 	for _, item := range m.sidebar {
 		displayName := strings.ToLower(item.DisplayName())
 		// Prefix matching - check if the display name starts with the filter
@@ -439,7 +448,7 @@ func (m *model) updateChannelSelectorItems() {
 			m.channelSelectorItems = append(m.channelSelectorItems, item)
 		}
 	}
-	
+
 	// Reset index if it's out of bounds
 	if m.channelSelectorIndex >= len(m.channelSelectorItems) {
 		m.channelSelectorIndex = 0
